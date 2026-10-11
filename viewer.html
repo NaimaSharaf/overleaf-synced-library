@@ -1,0 +1,334 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Synced evidence library</title><style>:root{font:17px/1.55 system-ui,sans-serif;color:#193d32;background:#f5f7f3}*{box-sizing:border-box}body{margin:0;padding:20px}h1{font-size:28px;margin:12px 0 6px}h2{font-size:21px}p{color:#526b5c}button,.file{font:inherit;cursor:pointer;border:1px solid #acbfb0;border-radius:7px;padding:9px 13px;background:white;color:#234f3b}button:hover,.file:hover{background:#e1ede2}button:disabled{opacity:.45;cursor:default}.primary{background:#225e42;color:white}.bar{position:sticky;top:0;z-index:5;background:#f5f7f3;padding:10px 0;display:flex;flex-wrap:wrap;gap:8px;border-bottom:1px solid #ccd9cf}label{display:block;margin:12px 0 5px;font-weight:600}input,textarea,select{font:inherit;padding:10px;border:1px solid #becdbf;border-radius:6px;width:100%;color:inherit;background:white}textarea{min-height:150px;resize:vertical}input[type=file]{font-size:14px}.small{font-size:14px}.row{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}#status{min-height:28px;overflow-wrap:anywhere;color:#805120}#preview img{display:block;width:100%;max-height:70vh;object-fit:contain;object-position:top left}#preview[hidden]{display:none}section{background:#fff;border:1px solid #d6e1d7;border-radius:10px;padding:16px;margin:16px 0}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid #589d72;outline-offset:2px}[hidden]{display:none!important}a{color:#246743}code{white-space:pre-wrap;overflow-wrap:anywhere}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;background:white}th,td{padding:14px;text-align:left;vertical-align:top;border-bottom:1px solid #d9e2da}th{background:#e3ede4}td:nth-child(2){min-width:300px;width:50%}td:first-child{min-width:160px;overflow-wrap:anywhere}.heading td{background:#dce9df;font-size:20px;font-weight:700}.image-cell img{width:100%;max-height:65vh;object-fit:contain;object-position:top left}.drag{cursor:grab}.drop{outline:2px solid #3c9161}.muted{color:#647b6b}.viewer{max-width:1450px;margin:auto}.viewer input[type=search]{max-width:550px}.pill{font-size:13px;padding:4px 8px;background:#e3ede4;border-radius:6px}
+
+#conflicts{border:2px solid #b57a28;background:#fff6e5}.conflict-option{padding:12px;margin:8px 0;border:1px solid #d8c49e;background:white}.conflict-option p{white-space:pre-wrap;overflow-wrap:anywhere}.sync-note{font-size:14px;color:#586f5d}
+</style></head><body class="viewer">
+<div class="bar"><button id="folder" class="primary">Open library folder</button><button id="reconnect" hidden>Reconnect folder</button><button id="save" class="primary">Sync now</button><button id="reload">Reload from disk</button><button id="section">Add section</button></div>
+<h1 id="title">Your evidence library</h1><p>Local files. Screenshots appear beneath their sentences.</p>
+<p id="status" role="status" aria-live="polite"></p><section id="conflicts" hidden></section><div id="find-results"></div>
+<details><summary>Open JSON without folder access</summary><p>Read-only mode. Choose session.json from the same folder as this viewer.</p><input id="json" type="file" accept=".json"></details>
+<section id="empty"><h2>Open your saved research</h2><p>Choose the folder created by Overleaf Local Capture. Your entries and headings will appear here; screenshots stay on disk until you ask to see them.</p></section>
+<label for="search">Search keywords, sentences, links and headings</label><input id="search" type="search" placeholder="Search this library…">
+<div class="row"><button id="prev">Previous</button><span id="count" class="pill"></span><button id="next">Next</button></div>
+<div class="table-wrap"><table id="table" hidden><thead><tr><th>Keyword / order</th><th id="context-heading">Sentence / enlarged screenshot</th><th>Weblink</th><th>Screenshot</th></tr></thead><tbody id="rows"></tbody></table></div>
+<p class="small">30 rows per page. Changes sync automatically. Keep the capture extension panel open to use Overleaf actions. Conflicting edits require a choice. This viewer never sends your library to a server.</p>
+<script>'use strict';
+globalThis.Library=(()=>{
+ const uuid=()=>crypto.randomUUID();
+ function empty(project,name){return {version:2,project,name,revision:null,rows:[]};}
+ function validate(data){
+  if(!data||data.version!==2||typeof data.project!=='string'||!Array.isArray(data.rows))throw Error('This is not a local library session.');
+  if(data.rows.length>50000)throw Error('Too many rows.');
+  const ids=new Set();
+  for(const row of data.rows){
+   if(!row||typeof row.id!=='string'||ids.has(row.id))throw Error('Invalid or duplicate row ID.');ids.add(row.id);
+   if(row.kind==='section'){if(typeof row.title!=='string')throw Error('Invalid section.');continue;}
+   if(typeof row.keyword!=='string'||typeof row.sentence!=='string'||typeof row.link!=='string')throw Error('Invalid row.');
+   if(row.link&&!/^https?:\/\//i.test(row.link))throw Error('Links must start with http:// or https://.');
+   if(row.screenshot&&!/^images\/[a-zA-Z0-9_-]+\.(png|jpg|webp)$/.test(row.screenshot))throw Error('Invalid screenshot path.');
+  }
+  return data;
+ }
+ async function read(dir){try{const file=await (await dir.getFileHandle('session.json')).getFile();return validate(JSON.parse(await file.text()));}catch(e){if(e.name==='NotFoundError')return null;throw e;}}
+ async function write(dir,name,content){const handle=await dir.getFileHandle(name,{create:true});const stream=await handle.createWritable();try{await stream.write(content);await stream.close();}catch(e){await stream.abort().catch(()=>{});throw e;}}
+ async function save(dir,data,pending,viewerHTML){
+  validate(data);
+  const current=await read(dir);
+  if((current?.revision||null)!==(data.revision||null))throw Error('This library changed on disk. Reload it before saving; your current edits have not been written.');
+  if(current&&current.project!==data.project)throw Error('This folder belongs to another Overleaf project.');
+  const images=await dir.getDirectoryHandle('images',{create:true});
+  for(const [path,blob] of pending)await write(images,path.split('/')[1],blob);
+  // Keep a recoverable text snapshot; screenshots have immutable filenames.
+  if(current)await write(dir,'session.previous.json',JSON.stringify(current,null,2));
+  if(viewerHTML)await write(dir,'viewer.html',viewerHTML);
+  const saved={...data,revision:uuid(),savedAt:new Date().toISOString()};
+  await write(dir,'session.json',JSON.stringify(saved,null,2));pending.clear();return saved;
+ }
+ async function image(dir,path,pending){
+  if(pending?.has(path))return pending.get(path);
+  if(!/^images\/[a-zA-Z0-9_-]+\.(png|jpg|webp)$/.test(path))throw Error('Invalid image path.');
+  return (await (await dir.getDirectoryHandle('images')).getFileHandle(path.split('/')[1])).getFile();
+ }
+ async function picture(file){
+  if(!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>16*1024*1024)throw Error('Use a PNG, JPEG or WebP under 16 MB.');
+  const bitmap=await createImageBitmap(file);try{
+   const scale=Math.min(1,1800/Math.max(bitmap.width,bitmap.height)),canvas=document.createElement('canvas');
+   canvas.width=Math.max(1,Math.round(bitmap.width*scale));canvas.height=Math.max(1,Math.round(bitmap.height*scale));canvas.getContext('2d').drawImage(bitmap,0,0,canvas.width,canvas.height);
+   const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw Error('Could not convert screenshot.');return blob;
+  }finally{bitmap.close();}
+ }
+ async function migrate(old){
+  if(old?.version!==1||typeof old.project!=='string'||!Array.isArray(old.rows))throw Error('Choose a JSON session from the original extension.');
+  const pending=new Map(),data=empty(old.project,old.name||'Imported library');
+  for(const row of old.rows){
+   if(row.kind==='section'){data.rows.push({id:uuid(),kind:'section',title:String(row.title||'Section')});continue;}
+   if(typeof row.keyword!=='string'||typeof row.sentence!=='string')throw Error('Invalid legacy row.');
+   const next={id:uuid(),keyword:row.keyword,sentence:row.sentence,link:row.link||'',screenshot:'',incomplete:!!row.incomplete};
+   if(row.screenshot){
+    const match=/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\s]+)$/.exec(row.screenshot);if(!match)throw Error('Unsupported legacy screenshot.');
+    const bytes=Uint8Array.from(atob(match[2].replace(/\s/g,'')),c=>c.charCodeAt(0));
+    const ext=match[1]==='image/jpeg'?'jpg':match[1].split('/')[1];next.screenshot='images/'+uuid()+'.'+ext;pending.set(next.screenshot,new Blob([bytes],{type:match[1]}));
+   }
+   data.rows.push(next);
+  }
+  validate(data);return {data,pending};
+ }
+ return {uuid,empty,validate,read,write,save,image,picture,migrate};
+})();
+
+'use strict';
+// Immutable per-edit files avoid competing writers replacing each other's changes.
+// Registers retain concurrent versions until a user explicitly chooses one.
+globalThis.SyncLibrary=class SyncLibrary {
+ constructor(dir,actor){this.dir=dir;this.actor=actor;this.events=new Map();this.base=null;this.loaded=null;this.heads=new Map();this.conflicts=[];this.stopped=false;}
+ static rows(data){return new Map(data.rows.map(row=>['row:'+row.id,row]));}
+ static values(data){const values=this.rows(data);values.set('order',data.rows.map(row=>row.id));values.set('name',data.name||'Evidence library');return values;}
+ async initialize(data){
+  Library.validate(data);
+  try{await this.dir.getFileHandle('sync-base.json');}
+  catch(error){if(error.name!=='NotFoundError')throw error;await Library.write(this.dir,'sync-base.json',JSON.stringify({...data,revision:null},null,2));}
+  return this.open();
+ }
+ async open(){
+  let file;try{file=await (await this.dir.getFileHandle('sync-base.json')).getFile();}catch(error){if(error.name==='NotFoundError')throw Error('Open and save this folder in the updated capture extension first to enable synchronization.');throw error;}
+  this.base=Library.validate(JSON.parse(await file.text()));
+  this.journal=await this.dir.getDirectoryHandle('changes',{create:true});
+  return this.read();
+ }
+ async read(){
+  if(!this.base)throw Error('Library is not connected.');
+  let waiting=false,changed=false;
+  for await(const [name,handle] of this.journal.entries()){
+   if(handle.kind!=='file'||!name.endsWith('.json')||this.events.has(name))continue;
+   const text=await (await handle.getFile()).text();
+   // A newly created file may still be waiting for its writable stream to close.
+   if(!text){waiting=true;continue;}
+   let event;try{event=JSON.parse(text);}catch{throw Error('Unreadable change file: '+name+'. Your changes remain on disk.');}
+   if(event.project!==this.base.project||typeof event.id!=='string'||!Array.isArray(event.changes))throw Error('Invalid change file: '+name);
+   for(const change of event.changes){if(typeof change.key!=='string'||!Array.isArray(change.replaces))throw Error('Invalid change record.');}
+   this.events.set(name,event);changed=true;
+  }
+  if(!changed&&this.materialized){
+   const copy=structuredClone(this.materialized);this.loaded=structuredClone(copy.data);this.conflicts=copy.conflicts;this.heads=new Map(this.cachedHeads);return {...copy,waiting};
+  }
+  const registers=new Map();
+  for(const [key,value] of SyncLibrary.values(this.base))registers.set(key,new Map([['base:'+key,{id:'base:'+key,value,actor:'Original library',at:''}]]));
+  const removals=new Map();
+  for(const event of this.events.values())for(let i=0;i<event.changes.length;i++){
+   const change=event.changes[i],id=event.id+':'+i;
+   if(!registers.has(change.key))registers.set(change.key,new Map());
+   registers.get(change.key).set(id,{id,value:change.value,actor:event.actor||'Another window',at:event.at||''});
+   if(!removals.has(change.key))removals.set(change.key,new Set());
+   for(const old of change.replaces)removals.get(change.key).add(old);
+  }
+  const heads=new Map(),values=new Map(),conflicts=[];
+  for(const [key,candidates] of registers){
+   const live=[...candidates.values()].filter(v=>!removals.get(key)?.has(v.id)).sort((a,b)=>a.id.localeCompare(b.id));
+   if(!live.length)continue;
+   heads.set(key,live.map(v=>v.id));values.set(key,live[0].value);
+   const distinct=new Set(live.map(v=>JSON.stringify(v.value)));
+   if(distinct.size>1)conflicts.push({key,versions:live});
+  }
+  const rows=new Map([...values].filter(([key,value])=>key.startsWith('row:')&&value!==null).map(([,value])=>[value.id,value]));
+  const order=Array.isArray(values.get('order'))?values.get('order'):[];
+  const ordered=[];for(const id of order){if(rows.has(id)){ordered.push(rows.get(id));rows.delete(id);}}
+  ordered.push(...[...rows.values()].sort((a,b)=>a.id.localeCompare(b.id)));
+  const ids=[...this.events.keys()].sort().join('|');
+  const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(ids));
+  const revision=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
+  const data=Library.validate({version:2,project:this.base.project,name:values.get('name')||this.base.name,revision,rows:ordered});
+  this.heads=heads;this.conflicts=conflicts;this.loaded=structuredClone(data);
+  this.materialized={data:structuredClone(data),conflicts:structuredClone(conflicts)};this.cachedHeads=new Map(heads);
+  return {data:structuredClone(data),conflicts,waiting};
+ }
+ async snapshot(data){
+  if(this.conflicts.length)return;
+  // session.json is a compatibility snapshot; synchronization reads the immutable journal.
+  await Library.write(this.dir,'session.json',JSON.stringify({...data,savedAt:new Date().toISOString()},null,2));
+ }
+ async publish(changes,pending=new Map()){
+  const imageDir=await this.dir.getDirectoryHandle('images',{create:true});
+  for(const [path,blob] of pending){if(!/^images\/[a-zA-Z0-9_-]+\.(png|jpg|webp)$/.test(path))throw Error('Invalid image path.');await Library.write(imageDir,path.split('/')[1],blob);}
+  let eventId=null;
+  if(changes.length){const id=crypto.randomUUID();eventId=id;await Library.write(this.journal,id+'.json',JSON.stringify({id,project:this.base.project,actor:this.actor,at:new Date().toISOString(),changes}));}
+  pending.clear();const result=await this.read();
+  try{await this.snapshot(result.data);}catch(error){result.snapshotError='Changes synchronized, but session.json could not be refreshed: '+error.message;}
+  result.eventId=eventId;return result;
+ }
+ async save(data,pending=new Map()){
+  Library.validate(data);if(data.project!==this.base.project)throw Error('Wrong project folder.');
+  if(this.conflicts.length)throw Error('Resolve conflicting entries before making more edits.');
+  const before=SyncLibrary.values(this.loaded),after=SyncLibrary.values(data),keys=new Set([...before.keys(),...after.keys()]);
+  const changes=[];
+  for(const key of keys){const old=before.has(key)?before.get(key):null,value=after.has(key)?after.get(key):null;if(JSON.stringify(old)!==JSON.stringify(value))changes.push({key,value,replaces:this.heads.get(key)||[]});}
+  const localHeads=new Map(this.heads),localBase=structuredClone(data);
+  const result=await this.publish(changes,pending);
+  if(result.eventId)changes.forEach((change,i)=>localHeads.set(change.key,[result.eventId+':'+i]));
+  result.localContext={loaded:localBase,heads:localHeads,conflicts:[]};return result;
+ }
+ async resolve(key,value){
+  const expected=JSON.stringify(this.heads.get(key)||[]);
+  await this.read();
+  if(expected!==JSON.stringify(this.heads.get(key)||[]))return {data:structuredClone(this.loaded),conflicts:this.conflicts};
+  if(!this.conflicts.some(c=>c.key===key))return {data:structuredClone(this.loaded),conflicts:this.conflicts};
+  return this.publish([{key,value,replaces:this.heads.get(key)||[]}]);
+ }
+};
+globalThis.renderSyncConflicts=function(container,conflicts,data,onChoose,dir){
+ const signature=JSON.stringify(conflicts.map(c=>[c.key,c.versions.map(v=>v.id)]));
+ if(container.dataset.signature===signature)return;container.dataset.signature=signature;
+ for(const url of container._imageURLs||[])URL.revokeObjectURL(url);container._imageURLs=[];
+ container.replaceChildren();container.hidden=!conflicts.length;
+ if(!conflicts.length)return;
+ const heading=document.createElement('h2');heading.textContent='Choose which version to keep';container.append(heading);
+ for(const conflict of conflicts){
+  const section=document.createElement('section'),label=document.createElement('strong');
+  const example=conflict.versions.find(v=>v.value&&typeof v.value==='object'&&!Array.isArray(v.value))?.value;
+  label.textContent=conflict.key==='order'?'Row order':example?.keyword||example?.title||'Entry changed';section.append(label);
+  for(const version of conflict.versions){
+   const box=document.createElement('div');box.className='conflict-option';const text=document.createElement('p');
+   const v=version.value;
+   text.textContent=v===null?'Entry removed':Array.isArray(v)?'Order: '+v.map(id=>data.rows.find(r=>r.id===id)?.keyword||data.rows.find(r=>r.id===id)?.title||id).join(' → '):typeof v==='object'?[v.keyword||v.title,v.year?'Year: '+v.year:'',v.sentence,v.notes?'Notes: '+v.notes:'',v.link,v.screenshot?'Screenshot: '+v.screenshot:'No screenshot'].filter(Boolean).join('\n'):String(v);
+   const button=document.createElement('button');button.textContent='Keep '+version.actor+' version';button.onclick=()=>onChoose(conflict.key,version.value);
+   box.append(text,button);
+   if(v?.screenshot&&dir){const show=document.createElement('button');show.textContent='Compare screenshot';show.onclick=async()=>{show.disabled=true;try{const blob=await Library.image(dir,v.screenshot);if(!box.isConnected)return;const url=URL.createObjectURL(blob);container._imageURLs.push(url);const image=document.createElement('img');image.src=url;image.alt='Screenshot from '+version.actor;image.style.maxWidth='100%';image.style.maxHeight='60vh';image.style.display='block';box.append(image);}catch(error){text.textContent+='\n'+error.message;show.disabled=false;}};box.append(show);}
+   section.append(box);
+  }
+  container.append(section);
+ }
+};
+
+const $=id=>document.getElementById(id);let dir=null,data=null,dirty=false,busy=false,foregroundBusy=false,actionWaiting=false,page=0,dragged=null,sync=null,syncTimer=null,editGeneration=0;const pending=new Map(),urls=new Set(),pageSize=30;
+const tell=text=>$('status').textContent=text;
+function release(){for(const url of urls)URL.revokeObjectURL(url);urls.clear();}
+function edited(){editGeneration++;dirty=true;tell('Syncing shortly…');clearTimeout(syncTimer);syncTimer=setTimeout(tick,900);}
+function canDiscard(){return !dirty||confirm('Discard unsaved changes and reload?');}
+function control(fn,waitForSync=false){return async()=>{
+ if(foregroundBusy||actionWaiting){tell('An action is already in progress. Please wait.');return;}
+ if(busy){
+  if(!waitForSync){tell('Sync is in progress. Please try again in a moment.');return;}
+  actionWaiting=true;tell('Finishing sync, then capturing your selection…');
+  const started=Date.now();
+  while(busy&&Date.now()-started<15000)await new Promise(resolve=>setTimeout(resolve,30));
+  actionWaiting=false;
+  if(busy){tell('Sync is taking longer than expected. Try Capture selection again when it finishes.');return;}
+ }
+ if(waitForSync&&sync?.conflicts.length){tell('Resolve the conflicting entries before capturing.');return;}
+ busy=true;foregroundBusy=true;document.querySelectorAll('button,input,textarea,select').forEach(el=>el.disabled=true);try{await fn();if(dirty&&sync)await flush();}catch(e){tell(e.name==='AbortError'?'Cancelled.':e.message);}finally{busy=false;foregroundBusy=false;render();}};}
+function move(id,target,after){const index=data.rows.findIndex(r=>r.id===id);if(index<0||id===target)return;const [row]=data.rows.splice(index,1);const to=data.rows.findIndex(r=>r.id===target);data.rows.splice(to+(after?1:0),0,row);edited();render();}
+function render(){
+ const web=!!data?.project.startsWith('websurfing:');$('context-heading').textContent=web?'Screenshot':'Sentence / enlarged screenshot';
+ release();$('rows').replaceChildren();$('title').textContent=data?.name||'Your evidence library';$('search').disabled=!data;
+ $('save').disabled=!dir||!data;$('section').disabled=!dir||!data;$('reload').disabled=!dir;
+ $('folder').disabled=$('json').disabled=false;
+ const query=$('search').value.toLowerCase();const filtered=(data?.rows||[]).filter(r=>(r.kind==='section'?r.title:[r.keyword,r.year||'',r.notes||'',r.sentence,r.link].join(' ')).toLowerCase().includes(query));
+ const pages=Math.max(1,Math.ceil(filtered.length/pageSize));page=Math.min(page,pages-1);$('count').textContent=filtered.length+' rows · Page '+(page+1)+' of '+pages;$('prev').disabled=page===0;$('next').disabled=page>=pages-1;
+ $('empty').hidden=!!data;$('table').hidden=!data;
+ for(const row of filtered.slice(page*pageSize,(page+1)*pageSize)){
+  const tr=document.createElement('tr');
+  if(dir){tr.addEventListener('dragover',e=>{if(dragged){e.preventDefault();tr.classList.add('drop');}});tr.addEventListener('dragleave',()=>tr.classList.remove('drop'));tr.addEventListener('drop',e=>{e.preventDefault();const id=dragged;dragged=null;if(id)move(id,row.id,e.clientY>tr.getBoundingClientRect().top+tr.getBoundingClientRect().height/2);});}
+  const tools=document.createElement('div');tools.className='row';
+  const handle=document.createElement('button');handle.textContent='⠿';handle.className='drag';handle.title='Drag to reorder';handle.draggable=!!dir;handle.disabled=!dir;handle.setAttribute('aria-label','Move '+(row.title||row.keyword));handle.ondragstart=e=>{dragged=row.id;e.dataTransfer.setData('text/plain',row.id);};handle.ondragend=()=>{dragged=null;document.querySelectorAll('.drop').forEach(el=>el.classList.remove('drop'));};tools.append(handle);
+  for(const [label,offset] of [['↑',-1],['↓',1]]){const b=document.createElement('button');b.textContent=label;b.title=offset<0?'Move up':'Move down';b.disabled=!dir;b.onclick=()=>{const index=data.rows.indexOf(row),other=data.rows[index+offset];if(other)move(row.id,other.id,offset>0);};tools.append(b);}
+  const remove=document.createElement('button');remove.textContent='Remove';remove.disabled=!dir;remove.onclick=()=>{if(confirm('Remove '+(row.title||row.keyword)+'?')){data.rows=data.rows.filter(r=>r!==row);edited();render();}};tools.append(remove);
+  if(row.kind==='section'){
+   tr.className='heading';const td=document.createElement('td');td.colSpan=4;const title=document.createElement('input');title.value=row.title;title.setAttribute('aria-label','Section heading');title.disabled=!dir;title.oninput=()=>{row.title=title.value;edited();};td.append(title,tools);tr.append(td);
+  }else{
+   const cells=Array.from({length:4},()=>tr.appendChild(document.createElement('td')));
+   const keyword=document.createElement('button');keyword.textContent=row.keyword;keyword.title='Copy keyword';keyword.onclick=async()=>{try{await navigator.clipboard.writeText(row.keyword);tell('Keyword copied.');}catch{tell('Clipboard unavailable. Select and copy the keyword manually.');}};cells[0].append(keyword,tools);if(web&&dir){const title=document.createElement('input');title.value=row.keyword;title.setAttribute('aria-label','Entry title');title.oninput=()=>{row.keyword=title.value.trim()||'Untitled entry';keyword.textContent=row.keyword;edited();};cells[0].prepend(title);keyword.remove();}if(web){const label=document.createElement('label');label.textContent='Year';const year=document.createElement('input');year.value=row.year||'';year.inputMode='numeric';year.maxLength=4;year.placeholder='e.g. 2026';year.disabled=!dir;year.oninput=()=>{row.year=year.value.trim();edited();};label.append(year);cells[0].append(label);}
+   const sentence=document.createElement('textarea');sentence.value=row.sentence;sentence.setAttribute('aria-label','Sentence for '+row.keyword);sentence.disabled=!dir;sentence.oninput=()=>{row.sentence=sentence.value;edited();};sentence.hidden=web;cells[1].append(sentence);
+   const link=document.createElement('input');link.type='url';link.value=row.link;link.disabled=!dir;link.setAttribute('aria-label','Weblink for '+row.keyword);link.oninput=()=>{row.link=link.value.trim();edited();};cells[2].append(link);
+   if(/^https?:\/\//i.test(row.link)){const a=document.createElement('a');a.href=row.link;a.target='_blank';a.rel='noopener noreferrer';a.textContent='Open link ↗';cells[2].append(a);}
+   const actions=document.createElement('div');actions.className='row';
+   for(const [label,type] of [['Refresh sentence','refresh'],['Find instances','find']]){const b=document.createElement('button');b.textContent=label;b.disabled=!sync;b.onclick=control(()=>sendRequest(type,row.id));actions.append(b);}actions.hidden=web;cells[1].append(actions);
+   const notesLabel=document.createElement('label');notesLabel.textContent='Notes';const notes=document.createElement('textarea');notes.value=row.notes||'';notes.placeholder='Add your notes…';notes.setAttribute('aria-label','Notes for '+row.keyword);notes.disabled=!dir;notes.oninput=()=>{row.notes=notes.value;edited();};notesLabel.append(notes);cells[1].append(notesLabel);
+   if(dir){
+    const upload=document.createElement('input');upload.type='file';upload.accept='image/png,image/jpeg,image/webp';upload.setAttribute('aria-label','Screenshot for '+row.keyword);upload.onchange=control(async()=>{if(upload.files[0])await attachImage(row,upload.files[0]);});cells[3].append(upload);
+    const paste=document.createElement('button');paste.textContent='Paste screenshot';paste.onclick=control(async()=>{for(const item of await navigator.clipboard.read()){const type=item.types.find(t=>['image/png','image/jpeg','image/webp'].includes(t));if(type){await attachImage(row,await item.getType(type));return;}}throw Error('No image in the clipboard.');});
+    paste.addEventListener('paste',event=>{event.preventDefault();const file=Array.from(event.clipboardData.items).find(i=>i.kind==='file'&&i.type.startsWith('image/'))?.getAsFile();if(file)control(()=>attachImage(row,file))();else tell('No image in the clipboard.');});cells[3].append(paste);
+    if(row.screenshot){const removeImage=document.createElement('button');removeImage.textContent='Remove screenshot';removeImage.onclick=()=>{pending.delete(row.screenshot);row.screenshot='';edited();render();};cells[3].append(removeImage);}
+   }
+   if(row.screenshot){
+    const button=document.createElement('button');button.textContent='Show screenshot';const preview=document.createElement('div');preview.className='image-cell';sentence.after(preview);cells[3].append(button);let opened=false,token=0,url=null;
+    button.onclick=async()=>{token++;const request=token;if(opened){preview.replaceChildren();if(url){URL.revokeObjectURL(url);urls.delete(url);}url=null;opened=false;button.textContent='Show screenshot';return;}
+     button.disabled=true;try{const img=document.createElement('img');img.loading='lazy';img.decoding='async';img.alt='Screenshot for '+row.keyword;
+      if(dir){const blob=await Library.image(dir,row.screenshot,pending);if(!tr.isConnected||request!==token)return;url=URL.createObjectURL(blob);urls.add(url);img.src=url;}
+      else img.src=row.screenshot;
+      img.onerror=()=>{tell('Screenshot could not be loaded. Open viewer.html from the library folder, or use Open library folder.');};preview.append(img);opened=true;button.textContent='Hide screenshot';
+     }catch(e){tell(e.message);}finally{button.disabled=false;}
+    };
+    queueMicrotask(()=>{if(tr.isConnected)button.onclick();});
+   }else cells[3].append(document.createTextNode('No screenshot'));
+  }
+  $('rows').append(tr);
+ }
+ lockConflicts();
+}
+$('folder').onclick=control(async()=>{if(!canDiscard())return;const chosen=await showDirectoryPicker({mode:'readwrite',id:'evidence-viewer',...((dir||viewerFolder)?{startIn:dir||viewerFolder}:{})});const loaded=await Library.read(chosen);if(!loaded)throw Error('Choose a library folder containing session.json.');const connection=new SyncLibrary(chosen,'HTML viewer');const result=await connection.open();dir=chosen;sync=connection;data=result.data;dirty=false;pending.clear();page=0;showConflicts(result);tell('Connected. Changes sync automatically while the capture panel is open.');rememberViewerFolder(chosen);});
+$('json').onchange=control(async()=>{if(!canDiscard())return;const file=$('json').files[0];if(!file)return;const loaded=Library.validate(JSON.parse(await file.text()));dir=null;sync=null;data=loaded;dirty=false;page=0;tell('Read-only view. Use Open library folder to edit. Screenshot paths are relative to viewer.html.');});
+$('reload').onclick=control(async()=>{if(!canDiscard())return;applyResult(await sync.read());tell('Loaded synchronized data.');});
+$('save').onclick=control(async()=>{await flush();tell('Folder is up to date.');});
+$('section').onclick=()=>{const title=prompt('Section heading');if(title?.trim()){data.rows.push({id:Library.uuid(),kind:'section',title:title.trim()});edited();page=Math.floor((data.rows.length-1)/pageSize);render();}};
+$('search').oninput=()=>{page=0;render();};$('prev').onclick=()=>{page--;render();};$('next').onclick=()=>{page++;render();};
+window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});render();
+
+async function attachImage(row,file){
+ const blob=await Library.picture(file);if(row.screenshot)pending.delete(row.screenshot);
+ row.screenshot='images/'+Library.uuid()+'.png';pending.set(row.screenshot,blob);edited();
+}
+function lockConflicts(){
+ const blocked=!!sync?.conflicts.length;
+ document.querySelectorAll('#table input,#table textarea').forEach(el=>el.disabled=foregroundBusy||blocked||!dir);
+ if(dir)document.querySelectorAll('#table button').forEach(el=>el.disabled=foregroundBusy||blocked);
+ $('save').disabled=$('section').disabled=foregroundBusy||blocked||!sync;
+}
+function showConflicts(result){renderSyncConflicts($('conflicts'),result.conflicts,data,(key,value)=>control(async()=>{applyResult(await sync.resolve(key,value));tell(sync.conflicts.length?'Resolve the remaining versions.':'Conflict resolved.');})(),dir);lockConflicts();}
+function applyResult(result){const changed=JSON.stringify(data?.rows)!==JSON.stringify(result.data.rows);data=result.data;dirty=false;if(changed)render();showConflicts(result);if(result.conflicts.length)tell('Conflicting edits found. Choose a version below.');else if(result.snapshotError)tell(result.snapshotError);}
+async function flush(){
+ if(!sync)return;if(sync.conflicts.length)throw Error('Resolve the conflicting versions first.');
+ const generation=editGeneration,sent=structuredClone(data),images=new Map(pending);
+ const result=await sync.save(sent,images);
+ for(const [path] of pending)if(sent.rows.some(r=>r.screenshot===path))pending.delete(path);
+ if(generation!==editGeneration){Object.assign(sync,result.localContext);dirty=true;return;}
+ applyResult(result);if(!result.conflicts.length&&!result.snapshotError)tell('Synchronized with the capture extension.');
+}
+async function tick(){
+ if(!sync||busy||actionWaiting)return;busy=true;
+ try{
+  if(dirty)await flush();else{
+   const generation=editGeneration,context={loaded:sync.loaded,heads:sync.heads,conflicts:sync.conflicts};
+   const result=await sync.read();if(generation!==editGeneration){Object.assign(sync,context);return;}
+   const changed=result.data.revision!==data.revision;applyResult(result);if(changed&&!result.conflicts.length)tell('Updated from the capture extension.');
+  }
+ }catch(error){tell('Sync needs attention: '+error.message);}finally{busy=false;lockConflicts();}
+}
+async function sendRequest(type,rowId){
+ if(!sync||!dir)throw Error('Open the shared library folder first.');if(dirty)await flush();if(sync.conflicts.length)throw Error('Resolve conflicts first.');
+ const id=Library.uuid(),name=id+'.json',requests=await dir.getDirectoryHandle('requests',{create:true}),responses=await dir.getDirectoryHandle('responses',{create:true});
+ await Library.write(requests,name,JSON.stringify({id,project:data.project,type,rowId,at:Date.now()}));
+ tell('Waiting for the capture extension. Keep its panel open and your Overleaf project loaded.');
+ const started=Date.now();let result;
+ while(Date.now()-started<35000){
+  try{const file=await (await responses.getFileHandle(name)).getFile();const text=await file.text();if(text){result=JSON.parse(text);break;}}catch(error){if(error.name!=='NotFoundError')throw error;}
+  await new Promise(resolve=>setTimeout(resolve,1000));
+ }
+ if(!result)throw Error('No response confirmed. Keep the capture panel open, check Overleaf, and try again after this request expires.');
+ if(!result.ok)throw Error(result.error);
+ applyResult(await sync.read());
+ $('find-results').replaceChildren();
+ if(result.matches)for(const match of result.matches){const section=document.createElement('section');section.textContent='Line '+match.line+' — '+match.sentence+'\n'+match.before+match.match+match.after;$('find-results').append(section);}
+ tell(result.message);
+}
+setInterval(tick,2500);
+
+let viewerDB=null,viewerFolder=null;
+try{
+ const request=indexedDB.open('evidence-synced-viewer',1);
+ request.onupgradeneeded=()=>request.result.createObjectStore('settings');
+ request.onsuccess=()=>{viewerDB=request.result;const read=viewerDB.transaction('settings').objectStore('settings').get('folder');read.onsuccess=()=>{viewerFolder=read.result;$('reconnect').hidden=!viewerFolder;};};
+}catch{}
+function rememberViewerFolder(folder){viewerFolder=folder;$('reconnect').hidden=false;if(viewerDB){const tx=viewerDB.transaction('settings','readwrite');tx.objectStore('settings').put(folder,'folder');}}
+$('reconnect').onclick=control(async()=>{
+ if(!canDiscard())return;if(await viewerFolder.requestPermission({mode:'readwrite'})!=='granted')throw Error('Folder access was not granted.');
+ const connection=new SyncLibrary(viewerFolder,'HTML viewer'),result=await connection.open();dir=viewerFolder;sync=connection;data=result.data;dirty=false;pending.clear();page=0;showConflicts(result);tell('Reconnected. Automatic sync is on.');
+});
+</script></body></html>
