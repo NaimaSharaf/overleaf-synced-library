@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Overleaf Synced Library",
-  "version": "2.3.9",
+  "version": "2.4.0",
   "minimum_chrome_version": "114",
   "description": "Save Overleaf evidence or Websurfing links and screenshots to a shared local library.",
   "permissions": [
@@ -9,7 +9,8 @@
     "sidePanel",
     "clipboardWrite",
     "tabs",
-    "scripting"
+    "scripting",
+    "contextMenus"
   ],
   "host_permissions": [
     "https://www.overleaf.com/*",

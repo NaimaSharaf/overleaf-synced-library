@@ -65,11 +65,12 @@ async function connect(handle){
 $('open').onclick=async()=>{try{await connect(await showDirectoryPicker({mode:'readwrite',id:'paper-city'}));}catch(e){if(e.name!=='AbortError')tell(e.message);}};
 $('reconnect').onclick=async()=>{try{await connect(await kv('folder'));}catch(e){tell(e.message);}};
 $('json').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{library=JSON.parse(await f.text());dir=null;sync=null;readOnly=true;local={version:2,outskirts:null,walls:[]};legacy=null;towns=[];hub=null;people.clear();reconcile(true);fit();tell('Read-only city. Open the folder to save town names and walls.');}catch(err){tell('Not a valid session.json: '+err.message);}};
-// Opened from the capture panel's "Open Paper City": use the folder the panel handed over.
-async function handedFolder(){const token=new URL(location.href).searchParams.get('folder');if(!token)return null;
- return new Promise(res=>{const r=indexedDB.open('overleaf-local-folders',1);r.onupgradeneeded=()=>r.result.createObjectStore('settings');r.onerror=()=>res(null);
-  r.onsuccess=()=>{const d=r.result;try{const q=d.transaction('settings').objectStore('settings').get('viewer:'+token);q.onsuccess=()=>{d.close();res(q.result||null);};q.onerror=()=>{d.close();res(null);};}catch{d.close();res(null);}};});}
-(async()=>{const given=await handedFolder();if(given)await kv('folder',given);const h=given||await kv('folder');if(!h)return;if(await h.queryPermission({mode:'readwrite'})==='granted'){try{await connect(h);}catch(e){tell(e.message);}}else{$('reconnect').hidden=false;$('reconnect').textContent='Reconnect '+h.name;}})();
+// Paper City runs inside the Overleaf Synced Library extension. It connects to the folder the capture panel
+// handed over ("Open Paper City"), else the folder it used last, else the panel's last library folder.
+function panelSetting(key){return new Promise(res=>{const r=indexedDB.open('overleaf-local-folders',1);r.onupgradeneeded=()=>r.result.createObjectStore('settings');r.onerror=()=>res(null);
+ r.onsuccess=()=>{const d=r.result;try{const q=d.transaction('settings').objectStore('settings').get(key);q.onsuccess=()=>{d.close();res(q.result||null);};q.onerror=()=>{d.close();res(null);};}catch{d.close();res(null);}};});}
+async function handedFolder(){const token=new URL(location.href).searchParams.get('folder');return token?panelSetting('viewer:'+token):null;}
+(async()=>{const given=await handedFolder();if(given)await kv('folder',given);const h=given||await kv('folder')||await panelSetting('lastFolder');if(!h)return;if(await h.queryPermission({mode:'readwrite'})==='granted'){try{await connect(h);}catch(e){tell(e.message);}}else{$('reconnect').hidden=false;$('reconnect').textContent='Reconnect '+h.name;}})();
 setInterval(()=>{if(!sync||busy||document.hidden)return;enqueue(async()=>{const r=await sync.read();if(r.data.revision!==library.revision){library=r.data;reconcile(!layoutDirty);}});},3000);
 
 // ---------- city model ----------

@@ -95,3 +95,6 @@ Next to Choose PDF folder, **Open PDF folder** opens a tab listing the PDFs save
 
 ## Heading per entry (2.3.8)
 The panel's **Heading for this entry** box now changes only the current entry: type a heading (or pick one from the list) and press Enter or Apply. The entry moves under that heading (an existing heading with that name, ignoring capitals and spaces, or a new heading added at the end). Other entries and the heading's name stay as they are. To rename a heading for everything under it, rename it in the viewer or in Paper City. Esc cancels.
+
+## Paper City is built in (2.4.0)
+Paper City is part of this extension now; you only load Overleaf Synced Library. Open it with **Open Paper City** in the panel, or right-click the extension icon → **Open Paper City**. It connects to your library folder automatically (the one the panel uses). If you had Paper City loaded as its own extension, remove it in chrome://extensions. It shares library.js, sync.js and bibtex.js with the extension instead of keeping copies.

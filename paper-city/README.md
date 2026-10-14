@@ -3,9 +3,9 @@
 Your Citations library as a floating space colony, in 3D (isometric). Each paper is an astronaut. Each paper is a resident. Each section is a town.
 
 ## Install
-1. Go to chrome://extensions, turn on Developer mode, click "Load unpacked", and choose this paper-city folder.
-2. Click the Paper City icon. A city tab opens.
-3. Click "Open library folder" and choose the same Citations folder your Overleaf Synced Library uses.
+1. Paper City is built into Overleaf Synced Library; you don't load it separately.
+2. In the capture panel click **Open Paper City**, or right-click the extension icon and choose **Open Paper City**.
+3. It connects to your library folder automatically. If it can't, click "Open library folder" and choose your library folder.
 
 ## Use
 - Towns: every section heading in your library is a town. Papers above the first heading live in "Outskirts". Rename a town in the sidebar; the city name does not change your section heading.
@@ -53,7 +53,6 @@ Sidebar → Sky → **🌠 Shooting stars**: a shower of shooting stars crosses 
 ## BibTeX and citation copy (1.12)
 - Click a resident: under Notes there's a BibTeX box. Paste or edit the entry; it syncs with the viewer and the capture panel.
 - The citation Last, F.M. et al., (year). PMID: n (e.g. Lu, Y. et al., (2016). PMID: 62524) appears below it. Click Copy citation.
-- bibtex.js is a copy from the capture extension, like library.js and sync.js.
 
 ## Guest rooms and sleepovers (1.11)
 - Every house has a guest bedroom (gold floor, gold bed, suitcase) plus one spare dining chair, on top of one bed and one chair per resident.
@@ -90,4 +89,4 @@ Paper City joins the same sync as your capture panel and viewer (it shows up as 
 - Dragging a resident to another town moves that paper under that heading.
 - Each town's position, colour and walls are saved on its section row as "city", so they are in session.json and the change history with everything else.
 - Only Outskirts' layout and walls in open space stay in city.json.
-- library.js and sync.js are copies from the capture extension. If you update those there, copy them here too.
+- It uses the extension's library.js, sync.js and bibtex.js (no copies).
