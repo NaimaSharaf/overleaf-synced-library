@@ -256,7 +256,7 @@ globalThis.Bib=(()=>{
  function pmidOf(f){
   for(const k of ['pmid','pubmed','pubmedid'])if(f[k]&&/\d/.test(f[k]))return clean(f[k]).replace(/\D/g,'');
   if(f.eprint&&/pubmed/i.test((f.eprinttype||'')+(f.archiveprefix||'')))return clean(f.eprint).replace(/\D/g,'');
-  for(const k of ['note','annote','extra','annotation','url'])if(f[k]){const m=/PMID[:\s]*(\d{4,9})/i.exec(f[k])||/pubmed\.ncbi\.nlm\.nih\.gov\/(\d{4,9})/i.exec(f[k]);if(m)return m[1];}
+  for(const k of ['note','notes','annote','extra','annotation','url',...Object.keys(f)])if(f[k]){const m=/PMID[:\s]*(\d{4,9})/i.exec(f[k])||/pubmed\.ncbi\.nlm\.nih\.gov\/(\d{4,9})/i.exec(f[k]);if(m)return m[1];} // any field that says PMID: n
   return '';
  }
  function citation(text,fallbackYear){
