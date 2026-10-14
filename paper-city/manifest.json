@@ -4,7 +4,25 @@
   "version": "1.6.0",
   "minimum_chrome_version": "114",
   "description": "Turn your Overleaf Synced Library into a floating space colony: every paper is a resident, every section is a town.",
-  "permissions": ["storage"],
-  "action": { "default_title": "Open Paper City" },
-  "background": { "service_worker": "background.js" }
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "storage"
+  ],
+  "action": {
+    "default_title": "Open Paper City",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
 }
