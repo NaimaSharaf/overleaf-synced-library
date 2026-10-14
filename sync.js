@@ -3,6 +3,22 @@
 // Registers retain concurrent versions until a user explicitly chooses one.
 globalThis.SyncLibrary=class SyncLibrary {
  constructor(dir,actor){this.dir=dir;this.actor=actor;this.events=new Map();this.base=null;this.loaded=null;this.heads=new Map();this.conflicts=[];this.stopped=false;}
+ // Two windows changed different fields of the same entry (e.g. the viewer renamed a heading while
+ // Paper City saved its layout): combine them field by field instead of asking which to keep.
+ static merge(live,candidates){
+  const plain=v=>v&&typeof v==='object'&&!Array.isArray(v);
+  if(!live.every(v=>plain(v.value)))return undefined;
+  const shared=live.map(v=>new Set(v.replaces||[])).reduce((a,b)=>new Set([...a].filter(x=>b.has(x))));
+  const baseId=[...shared].sort().find(id=>candidates.has(id));if(!baseId)return undefined;
+  const base=candidates.get(baseId).value;if(!plain(base))return undefined;
+  const out={...base},same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  for(const f of new Set([...Object.keys(base),...live.flatMap(v=>Object.keys(v.value))])){
+   const edits=live.filter(v=>!same(v.value[f],base[f]));if(!edits.length)continue;
+   if(edits.some(v=>!same(v.value[f],edits[0].value[f])))return undefined;
+   if(edits[0].value[f]===undefined)delete out[f];else out[f]=edits[0].value[f];
+  }
+  return out;
+ }
  static rows(data){return new Map(data.rows.map(row=>['row:'+row.id,row]));}
  static values(data){const values=this.rows(data);values.set('order',data.rows.map(row=>row.id));values.set('name',data.name||'Evidence library');return values;}
  async initialize(data){
@@ -34,12 +50,12 @@ globalThis.SyncLibrary=class SyncLibrary {
    const copy=structuredClone(this.materialized);this.loaded=structuredClone(copy.data);this.conflicts=copy.conflicts;this.heads=new Map(this.cachedHeads);return {...copy,waiting};
   }
   const registers=new Map();
-  for(const [key,value] of SyncLibrary.values(this.base))registers.set(key,new Map([['base:'+key,{id:'base:'+key,value,actor:'Original library',at:''}]]));
+  for(const [key,value] of SyncLibrary.values(this.base))registers.set(key,new Map([['base:'+key,{id:'base:'+key,value,actor:'Original library',at:'',replaces:[]}]]));
   const removals=new Map();
   for(const event of this.events.values())for(let i=0;i<event.changes.length;i++){
    const change=event.changes[i],id=event.id+':'+i;
    if(!registers.has(change.key))registers.set(change.key,new Map());
-   registers.get(change.key).set(id,{id,value:change.value,actor:event.actor||'Another window',at:event.at||''});
+   registers.get(change.key).set(id,{id,value:change.value,actor:event.actor||'Another window',at:event.at||'',replaces:change.replaces});
    if(!removals.has(change.key))removals.set(change.key,new Set());
    for(const old of change.replaces)removals.get(change.key).add(old);
   }
@@ -47,9 +63,10 @@ globalThis.SyncLibrary=class SyncLibrary {
   for(const [key,candidates] of registers){
    const live=[...candidates.values()].filter(v=>!removals.get(key)?.has(v.id)).sort((a,b)=>a.id.localeCompare(b.id));
    if(!live.length)continue;
-   heads.set(key,live.map(v=>v.id));values.set(key,live[0].value);
+   heads.set(key,live.map(v=>v.id));
    const distinct=new Set(live.map(v=>JSON.stringify(v.value)));
-   if(distinct.size>1)conflicts.push({key,versions:live});
+   if(distinct.size>1){const merged=SyncLibrary.merge(live,candidates);if(merged===undefined){values.set(key,live[0].value);conflicts.push({key,versions:live});}else values.set(key,merged);}
+   else values.set(key,live[0].value);
   }
   const rows=new Map([...values].filter(([key,value])=>key.startsWith('row:')&&value!==null).map(([,value])=>[value.id,value]));
   const order=Array.isArray(values.get('order'))?values.get('order'):[];

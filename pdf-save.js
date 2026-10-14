@@ -67,3 +67,6 @@ $('save-pdf').onclick=async()=>{
  finally{pdfBusy=false;}
 };
 pdfLocation();
+
+// Open a page listing the PDFs in the chosen PDF folder
+document.getElementById('open-pdf-folder').onclick=async()=>{await pdfReady;if(!pdfFolder){tell('Choose a PDF folder first.');return;}chrome.tabs.create({url:chrome.runtime.getURL('pdf-folder.html')});};

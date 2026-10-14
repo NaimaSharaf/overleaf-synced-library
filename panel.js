@@ -19,7 +19,7 @@ async function openImage(){
   $('preview').replaceChildren(img);$('preview').hidden=false;$('show').textContent='Hide screenshot';
  }catch(error){if(generation===previewGeneration)tell('Screenshot could not be loaded: '+error.message);}
 }
-function commit(){const row=currentRow();if(row){if(isWeb()){row.keyword=$('web-title').value.trim()||'Untitled entry';row.year=$('year').value.trim();}else row.sentence=$('sentence').value;row.link=$('link').value.trim();}}
+function commit(){const row=currentRow();if(row){if(isWeb()){row.keyword=$('web-title').value.trim()||'Untitled entry';row.year=$('year').value.trim();}else row.sentence=$('sentence').value;row.link=$('link').value.trim();if($('notes').dataset.id===row.id&&$('notes').value!==(row.notes||''))row.notes=$('notes').value;}}
 function draw(){
  $('mode').value=mode;
  for(const id of ['capture','keyword-find','keyword','sentence','sentence-label','refresh','find','import-section'])$(id).hidden=isWeb();
@@ -28,15 +28,17 @@ function draw(){
  let group=null;
  for(const row of data?.rows||[]){
   if(row.kind==='section'){
-   group=document.createElement('optgroup');group.label=row.title?.trim()||'Untitled section';$('entry').append(group);continue;
+   group=document.createElement('optgroup');group.label=row.title?.trim()||'Untitled section';group.dataset.id=row.id;$('entry').append(group);continue;
   }
   if(!group){group=document.createElement('optgroup');group.label='Unsectioned';$('entry').append(group);}
   const option=document.createElement('option');option.value=row.id;option.textContent=row.keyword;group.append(option);
  }
  if(!currentRow())current=data?.rows.find(r=>r.kind!=='section')?.id||null;
  $('entry').value=current||'';const row=currentRow();$('editor').hidden=!row;
- if(row){$('year').value=row.year||'';$('web-title').value=row.keyword;$('keyword').textContent=row.keyword;$('sentence').value=row.sentence;$('link').value=row.link;$('show').disabled=$('remove').disabled=!row.screenshot;}
+ if(row){$('year').value=row.year||'';$('web-title').value=row.keyword;$('keyword').textContent=row.keyword;$('sentence').value=row.sentence;$('link').value=row.link;if(document.activeElement!==$('notes')||$('notes').dataset.id!==row.id)$('notes').value=row.notes||'';$('notes').dataset.id=row.id;$('show').disabled=$('remove').disabled=!row.screenshot;}
  if(row?.screenshot)void openImage();
+ drawHeading();
+ drawBib(row);
  $('location').textContent=dir?dir.name+' · '+(data?.name||'New library')+' · '+(data?.rows.length||0)+' rows':'Choose a library folder.';
 }
 async function active(ignoreLibrary=false){
@@ -79,7 +81,7 @@ $('folder').onclick=run(async()=>{if(!discard())return;const handle=await showDi
 $('reconnect').onclick=run(async()=>{if(!discard())return;if(await remembered.requestPermission({mode:'readwrite'})!=='granted')throw Error('Folder access was not granted.');await connect(remembered);});
 $('reload').onclick=run(async()=>{if(!dir)throw Error('Choose a folder first.');if(!discard())return;await connect(dir);});
 $('entry').onchange=()=>{commit();current=$('entry').value;draw();};
-$('year').oninput=$('web-title').oninput=$('sentence').oninput=$('link').oninput=()=>{commit();if(isWeb()){const option=Array.from($('entry').options).find(o=>o.value===current);if(option)option.textContent=currentRow()?.keyword||'';}setDirty();};
+$('year').oninput=$('web-title').oninput=$('sentence').oninput=$('link').oninput=$('notes').oninput=()=>{commit();if(isWeb()){const option=Array.from($('entry').options).find(o=>o.value===current);if(option)option.textContent=currentRow()?.keyword||'';}setDirty();};
 $('capture').onclick=run(async()=>{if(!dir)throw Error('Choose a library folder first.');commit();const found=await editor('captureSelection');let row=data.rows.find(r=>r.kind!=='section'&&r.keyword.toLowerCase()===found.keyword.toLowerCase());if(!row){row={id:Library.uuid(),keyword:found.keyword,sentence:found.sentence||'',link:'',screenshot:'',incomplete:!!found.incomplete};data.rows.push(row);dirty=true;}current=row.id;draw();tell(found.incomplete?'Captured keyword. Paste its sentence; source context was unavailable.':dirty?'Entry ready. Save to folder to write it.':'Existing entry selected.');},true);
 $('refresh').onclick=run(async()=>{commit();const row=currentRow();if(!row)return;const result=await editor('findInstances',[row.keyword]),match=result.matches[0];if(!match?.count)throw Error('Keyword not found; sentence kept.');row.sentence=match.sentence;row.incomplete=false;draw();setDirty();});
 const findCurrentInstances=run(async()=>{const row=currentRow();if(!row)return;tell('Finding instances of '+row.keyword+'…');const result=await editor('findInstances',row.keyword);$('results').replaceChildren();for(const match of result.matches){const section=document.createElement('section'),title=document.createElement('strong'),text=document.createElement('p');title.textContent='Line '+match.line;text.textContent=match.sentence+'\n'+match.before+match.match+match.after;section.append(title,text);$('results').append(section);}tell(result.matches.length+' matches in the open source file.');},true);
@@ -192,6 +194,16 @@ async function handleViewerRequest(){
 setInterval(tick,2500);
 
 // Each viewer launch keeps its own folder handle, even if the panel changes libraries.
+$('open-city').onclick=async()=>{ // Paper City ships inside this extension (paper-city/), connected to the same folder
+ try{
+  if(!dir)throw Error('Choose a library folder first.');
+  const folder=dir;await ready;if(!db)throw Error('Folder connection could not be stored. Please reopen the extension.');
+  const token=Library.uuid();
+  await new Promise((resolve,reject)=>{const tx=db.transaction('settings','readwrite');tx.objectStore('settings').put(folder,'viewer:'+token);tx.oncomplete=resolve;tx.onerror=tx.onabort=()=>reject(tx.error||Error('Could not connect Paper City.'));});
+  await chrome.tabs.create({url:chrome.runtime.getURL('paper-city/city.html')+'?folder='+encodeURIComponent(token)});
+  tell('Paper City opened for '+folder.name+'. Changes sync automatically.');
+ }catch(error){tell(error.message);}
+};
 $('open-viewer').onclick=async()=>{
  try{
   if(!dir)throw Error('Choose a library folder first.');
@@ -249,3 +261,40 @@ $('add-web').onclick=run(async()=>{
 });
 
 $('mode').onchange=async()=>{await changeMode();$('mode').value=mode;};
+
+// BibTeX box for the current entry (synced with the viewer and Paper City)
+var bibBox=null;
+function drawBib(row){
+ const host=$('bib-box');if(!row){host.replaceChildren();bibBox=null;return;}
+ if(bibBox&&bibBox.dataset.id===row.id&&host.contains(document.activeElement)){bibBox.refresh(row.bibtex);return;}
+ bibBox=Bib.field(row,{disabled:!dir,onEdit:()=>setDirty(),tell});bibBox.dataset.id=row.id;host.replaceChildren(bibBox);
+}
+
+// Heading for this entry only: changing it moves just this entry under a heading with that name
+// (an existing one, matched ignoring capitals and spaces, or a new heading at the end). Other entries stay put.
+var headingMode='rename';
+const headingKey=t=>String(t||'').trim().replace(/\s+/g,' ').toLowerCase();
+function headingOf(id){let h=null;for(const r of data?.rows||[]){if(r.kind==='section')h=r;else if(r.id===id)return h;}return null;}
+function drawHeading(){
+ const input=$('heading'),h=headingOf(current);input.disabled=$('heading-apply').disabled=!dir||!current;
+ if(document.activeElement!==input)input.value=h?.title||'';
+ input.placeholder=h?'':'No heading yet: type one and press Enter';
+ const names=[...new Map((data?.rows||[]).filter(r=>r.kind==='section').map(r=>[headingKey(r.title),r.title.trim()])).values()];
+ $('heading-list').replaceChildren(...names.map(n=>new Option(n)));
+ $('heading-note').textContent=!current?'':'Type a heading (or pick one) and press Enter. Only this entry moves; in Paper City it moves to that house. A new name adds a new heading at the end.';
+}
+function applyHeading(){
+ const input=$('heading'),title=input.value.trim().replace(/\s+/g,' '),row=currentRow();if(!row)return;
+ const h=headingOf(row.id);if(!title){input.value=h?.title||'';return;}
+ if(h&&headingKey(h.title)===headingKey(title)){input.value=h.title;return;}
+ if(!data||!dir){tell('Choose a library folder first.');return;}
+ if(sync?.conflicts.length){tell('Resolve the conflicting versions first.');return;}
+ commit();const rows=data.rows;rows.splice(rows.indexOf(row),1);
+ let target=rows.find(r=>r.kind==='section'&&headingKey(r.title)===headingKey(title)),made=false;
+ if(!target){target={id:Library.uuid(),kind:'section',title};rows.push(target);made=true;}
+ let at=rows.indexOf(target)+1;while(at<rows.length&&rows[at].kind!=='section')at++;rows.splice(at,0,row);
+ input.blur();draw();setDirty();
+ tell(row.keyword+' moved under '+(made?'the new heading':'')+' "'+target.title+'".'+(made?' It is a new house in Paper City.':''));
+}
+$('heading-form').onsubmit=e=>{e.preventDefault();applyHeading();};
+$('heading').onkeydown=e=>{if(e.key==='Escape'){$('heading').value=headingOf(current)?.title||'';$('heading').blur();}};

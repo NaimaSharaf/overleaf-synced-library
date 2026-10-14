@@ -60,3 +60,41 @@ The current keyword appears beside Capture selection. Click it to copy the keywo
 
 ## Websurfing (2.2.0)
 Select Websurfing in the extension's Mode menu, then choose an empty folder to start a separate library (or open an existing Websurfing folder). Click Add entry, enter a title and weblink, and paste or upload a screenshot. Entries sync to the folder and can be organized in the same viewer. Websurfing does not need an Overleaf tab and has no sentence capture or refresh controls. Opening an existing library selects its mode automatically. Switching modes saves pending changes first; your previous folder remains on disk.
+
+## Heading edits merge automatically (2.2.7)
+If the viewer changes a section heading while Paper City saves that section's layout (or any two windows change different fields of the same entry at the same time), the changes are now combined automatically instead of stopping sync with a "Choose which version to keep" box. A real conflict (both windows changed the same field) still asks you. Reload the extension, reconnect the folder, and refresh viewer.html; Paper City needs its matching sync.js update too.
+
+## BibTeX and citation copy (2.3.0)
+Each entry has a BibTeX box: in the capture panel (current entry), in the viewer (under Notes) and in Paper City (click a resident). Paste or edit an entry anywhere; it syncs to the other two.
+Below the box, the citation is built as  Last, F.M. et al., (year). PMID: n  (e.g. Lu, Y. et al., (2016). PMID: 62524; "et al." only when there is more than one author). Click Copy citation to put it on the clipboard.
+- Author: the first author's last name, then first and middle initials. Handles "Last, First Middle" and "First Middle Last", particles (van der), hyphenated first names (Jean-Paul → JP) and LaTeX accents ({\"u} → ü).
+- Year: the year field, or the year in date, or the entry's Year.
+- PMID: a pmid field, eprint with eprinttype = pubmed, or "PMID: 12345678" / a PubMed link in note, annote, extra or url.
+- Anything missing is listed next to the citation.
+
+## Open Paper City (2.3.1)
+Click **Open Paper City** in the panel's top bar. Paper City opens in a new tab, already connected to the library folder the panel is using. (Paper City lives in the paper-city folder inside this extension, so you don't need to install it separately. If Chrome asks, click Reconnect in Paper City to allow folder access.)
+
+## Rename headings in the panel (2.3.2)
+Under Current entry, the **Section heading** box shows the heading that entry is under. Type to rename it; it syncs to the viewer and renames the matching house in Paper City.
+
+## Notes in the panel (2.3.3)
+The current entry now has a **Notes** box (between Weblink and BibTeX). It's the same Notes as in the viewer and in Paper City, and syncs both ways. In Paper City each line is something that paper says.
+
+## Headings in the panel (2.3.5)
+One **Section heading** box:
+- Type in it to rename the current entry's heading (and its Paper City house).
+- Click **New heading**, type a name, press Enter: a new heading is added at the end of your library and becomes a new house in Paper City. Esc or Cancel goes back.
+- For an entry above your first heading, type a name and press Enter (or Add heading): the heading is inserted above that entry, so it and the entries after it move into the new house.
+
+## Viewer fix: Remove and edits (2.3.6)
+Remove (for headings and entries) and edits in the viewer could silently do nothing if the library had synced in the background since the page was drawn. Fixed. Reconnect the extension and refresh viewer.html.
+
+## Open PDF folder (2.3.7)
+Next to Choose PDF folder, **Open PDF folder** opens a tab listing the PDFs saved there (newest first, with date and size, searchable). Click Open to read one. Chrome extensions can't open Finder at a folder you picked, so the list is shown in Chrome instead.
+
+## Heading per entry (2.3.8)
+The panel's **Heading for this entry** box now changes only the current entry: type a heading (or pick one from the list) and press Enter or Apply. The entry moves under that heading (an existing heading with that name, ignoring capitals and spaces, or a new heading added at the end). Other entries and the heading's name stay as they are. To rename a heading for everything under it, rename it in the viewer or in Paper City. Esc cancels.
+
+## Paper City is built in (2.4.0)
+Paper City is part of this extension now; you only load Overleaf Synced Library. Open it with **Open Paper City** in the panel, or right-click the extension icon → **Open Paper City**. It connects to your library folder automatically (the one the panel uses). If you had Paper City loaded as its own extension, remove it in chrome://extensions. It shares library.js, sync.js and bibtex.js with the extension instead of keeping copies.

@@ -26,9 +26,12 @@ async function readJSON(name){try{const f=await (await dir.getFileHandle(name)).
 // All library reads/writes run one at a time.
 let queue=Promise.resolve(),busy=0;
 function enqueue(fn){busy++;const run=queue.then(fn).catch(e=>tell(/conflict/i.test(e.message)?'Your viewer has conflicting edits. Choose a version there, then Paper City can save again.':e.message)).finally(()=>busy--);queue=run;return run;}
+// Read the latest library right before writing, so Paper City never saves on top of an old copy
+// (e.g. a heading you just renamed in the viewer).
+async function fresh(){const r=await sync.read();if(r.conflicts.length)throw Error('conflict');if(r.data.revision!==library.revision){library=r.data;reconcile(false);}}
 function editLibrary(mutate,message){
  if(readOnly||!sync){tell('Read-only city: open the library folder to save changes.');return;}
- return enqueue(async()=>{const next=structuredClone(library);if(mutate(next)===false)return;const r=await sync.save(next);library=r.data;reconcile(false);if(r.snapshotError)tell(r.snapshotError);else if(message)tell(message);});
+ return enqueue(async()=>{await fresh();const next=structuredClone(library);if(mutate(next)===false)return;const r=await sync.save(next);library=r.data;reconcile(false);if(r.snapshotError)tell(r.snapshotError);else if(message)tell(message);});
 }
 let layoutTimer=0,layoutDirty=false,layoutGen=0;
 function save(){ // layout, colours and walls
@@ -36,7 +39,7 @@ function save(){ // layout, colours and walls
  layoutTimer=setTimeout(()=>enqueue(async()=>{
   const mine=new Map(towns.map(t=>[t.id,[]])),loose=[];
   for(const k of walls){const [x,y]=k.split(',').map(Number),o=owner(x,y);(o&&o.id!==OUT?mine.get(o.id):loose).push(o&&o.id!==OUT?[x-o.x,y-o.y]:k);}
-  const next=structuredClone(library);let changed=false;
+  await fresh();const next=structuredClone(library);let changed=false;
   for(const row of next.rows){if(row.kind!=='section')continue;const t=towns.find(t=>t.id===row.id);if(!t)continue;
    const c={x:t.x,y:t.y,w:t.w,h:t.h,color:t.color,walls:mine.get(t.id),...(t.shift!=null?{shift:t.shift}:{})};if(JSON.stringify(row.city)!==JSON.stringify(c)){row.city=c;changed=true;}}
   if(changed){const r=await sync.save(next);library=r.data;}
@@ -62,24 +65,35 @@ async function connect(handle){
 $('open').onclick=async()=>{try{await connect(await showDirectoryPicker({mode:'readwrite',id:'paper-city'}));}catch(e){if(e.name!=='AbortError')tell(e.message);}};
 $('reconnect').onclick=async()=>{try{await connect(await kv('folder'));}catch(e){tell(e.message);}};
 $('json').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{library=JSON.parse(await f.text());dir=null;sync=null;readOnly=true;local={version:2,outskirts:null,walls:[]};legacy=null;towns=[];hub=null;people.clear();reconcile(true);fit();tell('Read-only city. Open the folder to save town names and walls.');}catch(err){tell('Not a valid session.json: '+err.message);}};
-(async()=>{const h=await kv('folder');if(!h)return;if(await h.queryPermission({mode:'readwrite'})==='granted'){try{await connect(h);}catch(e){tell(e.message);}}else{$('reconnect').hidden=false;$('reconnect').textContent='Reconnect '+h.name;}})();
+// Paper City runs inside the Overleaf Synced Library extension. It connects to the folder the capture panel
+// handed over ("Open Paper City"), else the folder it used last, else the panel's last library folder.
+function panelSetting(key){return new Promise(res=>{const r=indexedDB.open('overleaf-local-folders',1);r.onupgradeneeded=()=>r.result.createObjectStore('settings');r.onerror=()=>res(null);
+ r.onsuccess=()=>{const d=r.result;try{const q=d.transaction('settings').objectStore('settings').get(key);q.onsuccess=()=>{d.close();res(q.result||null);};q.onerror=()=>{d.close();res(null);};}catch{d.close();res(null);}};});}
+async function handedFolder(){const token=new URL(location.href).searchParams.get('folder');return token?panelSetting('viewer:'+token):null;}
+(async()=>{const given=await handedFolder();if(given)await kv('folder',given);const h=given||await kv('folder')||await panelSetting('lastFolder');if(!h)return;if(await h.queryPermission({mode:'readwrite'})==='granted'){try{await connect(h);}catch(e){tell(e.message);}}else{$('reconnect').hidden=false;$('reconnect').textContent='Reconnect '+h.name;}})();
 setInterval(()=>{if(!sync||busy||document.hidden)return;enqueue(async()=>{const r=await sync.read();if(r.data.revision!==library.revision){library=r.data;reconcile(!layoutDirty);}});},3000);
 
 // ---------- city model ----------
 function reconcile(fromDisk){
+ computeFriends(library.rows||[]);
  const groups=[{id:OUT,section:'Outskirts',row:null,rows:[]}];
- for(const r of library.rows||[]){if(r.kind==='section')groups.push({id:r.id,section:r.title||'Untitled town',row:r,rows:[]});else groups.at(-1).rows.push(r);}
+ {const all=[groups[0]];for(const r of library.rows||[]){if(r.kind==='section')all.push({id:r.id,section:r.title||'Untitled town',row:r,rows:[]});else all.at(-1).rows.push(r);}
+  // headings with the same name (ignoring case and spaces) are one house; the first one holds its layout
+  const byName=new Map();groups.length=0;
+  for(const g of all){g.ids=[g.id];if(g.id===OUT){groups.push(g);continue;}const k=g.section.trim().replace(/\s+/g,' ').toLowerCase(),m=byName.get(k);
+   if(m){m.rows.push(...g.rows);m.ids.push(g.id);}else{byName.set(k,g);groups.push(g);}}}
  prev=new Map(towns.map(t=>[t.id,t]));towns=[];let grew=false;
  if(fromDisk)walls=new Set(local.walls||[]);
  groups.forEach((g,i)=>{
   if(g.id===OUT&&!g.rows.length)return;
   const old=prev.get(g.id),stored=g.id===OUT?local.outskirts:g.row.city,leg=legacy?.towns?.[g.id];
   const s=(!fromDisk&&old)||(stored?.w&&stored)||(leg?.w&&leg)||old||{};
-  const t={id:g.id,section:g.section,name:g.section,members:g.rows.map(r=>r.id),color:s.color||COLORS[i%COLORS.length],shift:s.shift??null};
-  if(s.w){Object.assign(t,{x:s.x,y:s.y,w:s.w,h:s.h});if(fitHouse(t))grew=true;}else{Object.assign(t,{x:0,y:0,w:14,h:13});fitHouse(t);Object.assign(t,place(t.w,t.h));grew=true;}
+  const t={id:g.id,sectionIds:g.ids,section:g.section,name:g.section,members:g.rows.map(r=>r.id),color:s.color||COLORS[i%COLORS.length],shift:s.shift??null};
+  if(s.w){Object.assign(t,{x:s.x,y:s.y,w:s.w,h:s.h});if(fitHouse(t)){grew=true;t._resized=true;}}else{Object.assign(t,{x:0,y:0,w:14,h:13});fitHouse(t);Object.assign(t,place(t.w,t.h));grew=true;}
   if(fromDisk&&g.row?.city?.walls)for(const [dx,dy] of g.row.city.walls)walls.add(key(t.x+dx,t.y+dy));
   towns.push(t);
  });
+ for(const t of towns)if(t._resized){delete t._resized;unOverlap(t);}
  if(fromDisk&&legacy&&!walls.size)for(const k of legacy.walls||[])walls.add(k);
  const home=new Map();for(const t of towns)for(const id of t.members)home.set(id,t.id);
  const rows=new Map((library.rows||[]).filter(r=>r.kind!=='section').map(r=>[r.id,r]));
@@ -88,8 +102,17 @@ function reconcile(fromDisk){
   if(!p){p={id,row:r,wait:Math.random()*2};const s=spot(t);p.x=s.x;p.y=s.y;p.tx=p.x;p.ty=p.y;people.set(id,p);}
   p.row=r;if(p.town!==t.id&&!inside(t,p.x,p.y)){const s=spot(t);p.x=s.x;p.y=s.y;p.tx=p.x;p.ty=p.y;}p.town=t.id;}
  if(selected&&!people.has(selected))closeCard();
+ syncCardNotes();
  if(ensureHub())grew=true;
  renderTowns();if(grew&&!readOnly)setTimeout(save,0);
+}
+function unOverlap(t){ // a house that grew moves to free space (with its walls) instead of overlapping a neighbour
+ const others=[...towns,...(hub?[hub]:[])].filter(o=>o!==t&&o.w),hit=(x,y)=>others.some(o=>x<o.x+o.w+3&&x+t.w+3>o.x&&y<o.y+o.h+3&&y+t.h+3>o.y);
+ if(!hit(t.x,t.y))return;
+ for(let r=1;r<200;r++)for(let dx=-r;dx<=r;dx++)for(const dy of [-r,r])for(const [a,b] of [[dx,dy],[dy,dx]])if(!hit(t.x+a,t.y+b)){
+  const mv=[...walls].filter(k=>{const [x,y]=k.split(',').map(Number);return x>=t.x-1&&x<=t.x+t.w&&y>=t.y-1&&y<=t.y+t.h;});
+  for(const k of mv)walls.delete(k);for(const k of mv){const [x,y]=k.split(',').map(Number);walls.add(key(x+a,y+b));}
+  for(const p of people.values())if(p.town===t.id){p.x+=a;p.y+=b;p.path=null;}t.x+=a;t.y+=b;return;}
 }
 function place(w,h){
  const taken=[...towns,...prev.values(),...(hub?[hub]:[])].filter(s=>s.w);
@@ -108,7 +131,7 @@ const renameTimers={};
 function renameTown(t,value){
  value=value.trim();if(!value||value===t.section)return;
  if(t.id===OUT)return editLibrary(next=>{next.rows.unshift({id:Library.uuid(),kind:'section',title:value,city:{x:t.x,y:t.y,w:t.w,h:t.h,color:t.color,walls:[]}});},'Outskirts is now the section "'+value+'" in your viewer.').then(()=>{local.outskirts=null;save();});
- return editLibrary(next=>{const r=next.rows.find(r=>r.id===t.id);if(!r)return false;r.title=value;},'Renamed. The section heading in your viewer is now "'+value+'".');
+ const ids=t.sectionIds||[t.id];return editLibrary(next=>{const rs=next.rows.filter(r=>ids.includes(r.id));if(!rs.length)return false;for(const r of rs)r.title=value;},(ids.length>1?'Renamed all '+ids.length+' headings called "'+t.section+'".':'Renamed.')+' The section heading in your viewer is now "'+value+'".');
 }
 
 // ---------- sidebar ----------
@@ -122,7 +145,7 @@ function renderTowns(){
   const inp=el.querySelector('input');inp.value=focus===t.id?sel[2]:t.name;inp.placeholder=t.section;inp.dataset.town=t.id;
   if(t.id===OUT){inp.onchange=()=>renameTown(t,inp.value);inp.title='Press Enter to turn Outskirts into a section heading';}
   else inp.oninput=()=>{t.name=inp.value||t.section;clearTimeout(renameTimers[t.id]);renameTimers[t.id]=setTimeout(()=>renameTown(t,inp.value),900);};
-  el.querySelector('.small').textContent=(t.id===OUT?'Papers above your first heading · rename to make it a section':'Section heading in your viewer · furnished for everyone')+' · '+t.members.length+' resident'+(t.members.length===1?'':'s');
+  el.querySelector('.small').textContent=(t.id===OUT?'Papers above your first heading · rename to make it a section':((t.sectionIds?.length>1)?t.sectionIds.length+' headings with this name in your viewer':'Section heading in your viewer')+' · furnished for everyone')+' · '+t.members.length+' resident'+(t.members.length===1?'':'s');
   const hb=el.querySelector('[data-a=home]');hb.textContent=isRecalled(t)?'Back to schedule':'Call home';hb.classList.toggle('on',isRecalled(t));
   hb.onclick=()=>{if(isRecalled(t)){if(recalled.has('all')){recalled.delete('all');for(const o of towns)if(o!==t)recalled.add(o.id);}else recalled.delete(t.id);tell(t.name+' is back on its schedule.');}else{recalled.add(t.id);tell('Everyone in '+t.name+' is heading home.');}renderTowns();renderRecall();};
   el.querySelector('[data-a=go]').onclick=()=>focusTown(t);
@@ -150,6 +173,26 @@ function openHomeMenu(p,cx,cy){
  const r=m.parentElement.getBoundingClientRect(),w=m.offsetWidth,h=m.offsetHeight;
  m.style.left=Math.max(8,Math.min(cx-r.left,r.width-w-8))+'px';m.style.top=Math.max(8,Math.min(cy-r.top,r.height-h-8))+'px';
 }
+// ---------- right-click a house: everyone who lives there ----------
+function openOccupants(t,cx,cy){
+ const m=$('ctx');m.replaceChildren();const isHub=t===hub;
+ const residents=isHub?[...people.values()].filter(p=>inRect(hub,Math.floor(p.x),Math.floor(p.y))):t.members.map(id=>people.get(id)).filter(Boolean);
+ const title=document.createElement('div');title.className='ctx-title';title.textContent=isHub?'At the Work Hub now ('+residents.length+')':'Who lives in '+t.name+' ('+residents.length+')';m.append(title);
+ const status=p=>{if(p.chat)return chatLabel(p);const away=!isHub&&!inRect(t,Math.floor(p.x),Math.floor(p.y));const a=p.act?ACT_LABEL[p.act]:'';return away&&p.act!=='work'?'Out: '+(a||'walking'):a;};
+ const item=p=>{const b=document.createElement('button');b.className='ctx-item';const dot=document.createElement('span');dot.className='dot';dot.style.background=SHIRTS[hash(p.id)%SHIRTS.length];
+  const txt=document.createElement('span'),n=document.createElement('b');n.textContent=nameOf(p.row)+(p.row.year?' · '+p.row.year:'');const act=document.createElement('span');act.className='occ-act';act.textContent=status(p);
+  if(isHub){const home=towns.find(h=>h.id===p.town);act.textContent=(home?'From '+home.name+' · ':'')+act.textContent;}
+  txt.append(n,act);b.append(dot,txt);b.onclick=()=>{closeHomeMenu();focusPerson(p);openCard(p);};return b;};
+ const sorted=residents.slice().sort((a,b)=>nameOf(a.row).localeCompare(nameOf(b.row)));
+ if(!sorted.length){const e=document.createElement('div');e.className='occ-head';e.textContent=isHub?'Nobody is here right now.':'Nobody lives here yet.';m.append(e);}
+ for(const p of sorted)m.append(item(p));
+ if(!isHub){const stay=[...people.values()].filter(p=>p.stay?.host===t.id);if(stay.length){const h=document.createElement('div');h.className='occ-head';h.textContent='Staying over in the guest room';m.append(h);for(const p of stay)m.append(item(p));}
+  const guests=[...people.values()].filter(p=>p.town!==t.id&&!p.stay&&p.chat?.kind==='visit'&&p.chat.host===t);
+  if(guests.length){const h=document.createElement('div');h.className='occ-head';h.textContent='Visiting now';m.append(h);for(const p of guests)m.append(item(p));}}
+ m.hidden=false;
+ const r=m.parentElement.getBoundingClientRect(),w=m.offsetWidth,h=m.offsetHeight;
+ m.style.left=Math.max(8,Math.min(cx-r.left,r.width-w-8))+'px';m.style.top=Math.max(8,Math.min(cy-r.top,r.height-h-8))+'px';
+}
 addEventListener('keydown',e=>{if(e.key==='Escape')closeHomeMenu();});
 addEventListener('pointerdown',e=>{if(!$('ctx').hidden&&!$('ctx').contains(e.target)&&e.target!==canvas)closeHomeMenu();});
 canvas.addEventListener('wheel',closeHomeMenu);
@@ -161,7 +204,7 @@ $('new-town').onsubmit=async e=>{e.preventDefault();const inp=$('new-town-name')
  const id=Library.uuid();await editLibrary(next=>{next.rows.push({id,kind:'section',title:name});},name+' is built. It is a new section heading at the bottom of your viewer.');
  const t=towns.find(t=>t.id===id);if(t){inp.value='';focusTown(t);save();}};
 $('clear-walls').onclick=()=>{if(walls.size&&confirm('Demolish all '+walls.size+' wall blocks?')){walls.clear();save();}};
-const HINTS={select:'Click a resident to read their paper. Right-click one, or drag it, to give it a new home. Drag empty ground to pan.',wall:'Click or drag to lay wall blocks. Residents cannot pass the force-field walls.',erase:'Click or drag over walls to remove them.',move:'Drag a house to relocate it, with its residents, furniture and walls.'};
+const HINTS={select:'Click a resident to read their paper. Right-click one, or drag it, to give it a new home. Right-click a house to list everyone who lives there. Drag empty ground to pan.',wall:'Click or drag to lay wall blocks. Residents cannot pass the force-field walls.',erase:'Click or drag over walls to remove them.',move:'Drag a house to relocate it, with its residents, furniture and walls.'};
 function setTool(t){tool=t;document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('on',b.dataset.tool===t));$('hint').textContent=HINTS[t]+' Scroll to zoom; hold Space or right-drag to pan.';canvas.style.cursor=t==='select'?'default':t==='move'?'move':'crosshair';}
 document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>setTool(b.dataset.tool));setTool('select');
 
@@ -169,15 +212,29 @@ document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>setTool(b.data
 async function openCard(p){
  selected=p.id;const r=p.row,t=towns.find(t=>t.id===p.town);
  $('card-name').textContent=nameOf(r);
- $('card-meta').textContent=[r.year,r.title&&r.title!==r.keyword?r.title:'','Lives in '+(t?.name||'?')+' ('+SHIFTS[shiftOf(t)].name+')',p.act?ACT_LABEL[p.act]:''].filter(Boolean).join(' · ');
- $('card-text').textContent=[r.sentence,r.notes].filter(Boolean).join('\n\n');
+ $('card-meta').textContent=[r.year,r.title&&r.title!==r.keyword?r.title:'','Lives in '+(t?.name||'?')+' ('+SHIFTS[shiftOf(t)].name+')',p.chat?chatLabel(p):p.act?ACT_LABEL[p.act]:'',stayLabel(p),petLabel(p)].filter(Boolean).join(' · ');
+ flushNotes();$('card-text').textContent=r.sentence||'';drawCardBib(p);const ta=$('card-notes');ta.value=r.notes||'';ta.dataset.id=p.id;ta.disabled=readOnly||!sync;$('card-notes-status').textContent=ta.disabled?'Open your library folder to edit notes.':nameOf(r)+' says each line when it talks.';renderCardFriends(p);
  const a=$('card-link');a.hidden=!/^https?:\/\//i.test(r.link||'');a.href=a.hidden?'#':r.link;
  const img=$('card-img');img.hidden=true;if(cardURL){URL.revokeObjectURL(cardURL);cardURL=null;}
  $('card').hidden=false;
  if(dir&&/^images\/[a-zA-Z0-9_-]+\.(png|jpg|webp)$/.test(r.screenshot||'')){try{const f=await (await (await dir.getDirectoryHandle('images')).getFileHandle(r.screenshot.split('/')[1])).getFile();if(selected!==p.id)return;cardURL=URL.createObjectURL(f);img.src=cardURL;img.hidden=false;}catch{}}
 }
-function closeCard(){selected=null;$('card').hidden=true;if(cardURL){URL.revokeObjectURL(cardURL);cardURL=null;}}
+function closeCard(){flushNotes();flushBib();selected=null;$('card').hidden=true;if(cardURL){URL.revokeObjectURL(cardURL);cardURL=null;}}
 $('card-close').onclick=closeCard;
+// Notes = this paper's sentence bank. Same field as Notes in your viewer, synced through the library.
+let notesTimer=0,notesDirty=null;
+function flushNotes(){clearTimeout(notesTimer);const d=notesDirty;notesDirty=null;if(!d)return;
+ editLibrary(next=>{const row=next.rows.find(x=>x.id===d.id);if(!row||(row.notes||'')===d.value)return false;row.notes=d.value;},'Notes saved. They show in your viewer too.');}
+$('card-notes').oninput=e=>{const ta=e.target;notesDirty={id:ta.dataset.id,value:ta.value};$('card-notes-status').textContent='Saving…';clearTimeout(notesTimer);notesTimer=setTimeout(()=>{flushNotes();$('card-notes-status').textContent='Saved · synced with your viewer';},900);};
+$('card-notes').onblur=flushNotes;
+// BibTeX = same field as in the viewer and the capture panel
+let bibTimer=0,bibDirty=null,bibBox=null;
+function flushBib(){clearTimeout(bibTimer);const d=bibDirty;bibDirty=null;if(!d)return;
+ editLibrary(next=>{const row=next.rows.find(x=>x.id===d.id);if(!row||(row.bibtex||'')===d.value)return false;row.bibtex=d.value;},'BibTeX saved. It shows in your viewer and capture panel too.');}
+function drawCardBib(p){flushBib();const row={...p.row};bibBox=Bib.field(row,{disabled:readOnly||!sync,tell,onEdit:v=>{bibDirty={id:p.id,value:v};clearTimeout(bibTimer);bibTimer=setTimeout(flushBib,900);}});bibBox.dataset.id=p.id;bibBox.querySelector('textarea').addEventListener('blur',flushBib);$('card-bib').replaceChildren(bibBox);}
+function syncCardNotes(){
+ if(bibBox&&selected===bibBox.dataset.id&&!bibDirty){const q=people.get(selected);if(q)bibBox.refresh(q.row.bibtex);} // show edits made in the viewer while the card is open
+ const ta=$('card-notes');if(!selected||$('card').hidden||notesDirty||document.activeElement===ta)return;const p=people.get(selected);if(p&&ta.dataset.id===p.id&&ta.value!==(p.row.notes||''))ta.value=p.row.notes||'';}
 
 // ---------- camera (isometric 3D) ----------
 const TW=64,TH=32; // iso tile width/height in px
@@ -203,7 +260,7 @@ canvas.onpointerdown=e=>{
  canvas.setPointerCapture(e.pointerId);const {sx,sy}=pos(e),w=toWorld(sx,sy);
  if(e.button===2&&!spaceDown){const p=personAt(sx,sy);if(p){openHomeMenu(p,e.clientX,e.clientY);return;}}
  closeHomeMenu();
- if(e.button!==0||spaceDown)return drag={kind:'pan',sx,sy,cx:cam.x,cy:cam.y};
+ if(e.button!==0||spaceDown)return drag={kind:'pan',sx,sy,cx:cam.x,cy:cam.y,click:e.button===2&&!spaceDown,right:e.button===2};
  if(tool==='wall'||tool==='erase'){paint(w,w);return drag={kind:'paint',last:w};}
  if(tool==='move'){const t=townAt(Math.floor(w.x),Math.floor(w.y))||(hub&&inRect(hub,Math.floor(w.x),Math.floor(w.y))?hub:null);if(t)return drag={kind:'town',t,w0:w,dx:0,dy:0};}
  if(tool==='select'){const p=personAt(sx,sy);if(p)return drag={kind:'person',p,sx,sy,moved:false};}
@@ -219,12 +276,13 @@ canvas.onpointermove=e=>{
 canvas.onpointerup=e=>{
  const d=drag;drag=null;if(!d)return;
  if(d.kind==='paint')save();
+ else if(d.kind==='pan'&&d.right){if(d.click){const {sx,sy}=pos(e),w=toWorld(sx,sy),x=Math.floor(w.x),y=Math.floor(w.y),t=hub&&inRect(hub,x,y)?hub:townAt(x,y);if(t)openOccupants(t,e.clientX,e.clientY);}}
  else if(d.kind==='pan'&&d.click&&tool==='select')closeCard();
  else if(d.kind==='town'&&(d.dx||d.dy)){const t=d.t,moved=new Set();
   for(const k of walls){const [x,y]=k.split(',').map(Number);if(x>=t.x-1&&x<=t.x+t.w&&y>=t.y-1&&y<=t.y+t.h)moved.add(k);}
   for(const k of moved)walls.delete(k);for(const k of moved){const [x,y]=k.split(',').map(Number);walls.add(key(x+d.dx,y+d.dy));}
   for(const p of people.values()){if(t===hub?inRect(hub,Math.floor(p.x),Math.floor(p.y)):p.town===t.id){p.x+=d.dx;p.y+=d.dy;}p.path=null;}
-  t.x+=d.dx;t.y+=d.dy;save();}
+  t.x+=d.dx;t.y+=d.dy;endAllChats();save();}
  else if(d.kind==='person'){const p=d.p;
   if(!d.moved)return openCard(p);
   const t=townAt(Math.floor(p.x),Math.floor(p.y));
@@ -256,35 +314,63 @@ function townAct(t,personal=0){const m=((clock-SHIFTS[shiftOf(t)].off-personal)%
 const recalled=new Set(); // house ids called home ('all' = every house)
 const isRecalled=t=>t&&(recalled.has('all')||recalled.has(t.id));
 function activityAt(p){const t=towns.find(t=>t.id===p.town);if(isRecalled(t))return 'home';return townAct(towns.find(t=>t.id===p.town),(hash(p.id)%61)-30);}
+// Real floor plan: one bedroom (one bed) per resident, shared bathrooms, a hallway spine from the front door,
+// and an open-plan living room + kitchen/dining at the front with exactly one dining chair per resident.
+function housePlan(N){
+ const B=Math.max(1,Math.ceil(N/4));let best=null;
+ for(let R=1;R<=12;R++){
+  let k=3;while(k+(2*R-1)*(k-1)<N+B+1)k+=2; // +1: guest bedroom
+  const W=2*k-2,cols=Math.max(1,Math.floor((W+1)/3)),rows=Math.ceil(Math.ceil((N+1)/4)/cols),S=Math.ceil(N/Math.max(1,W-2));
+  const D=Math.max(4*rows+1,2*S+2)+2,w=4*k+1,h=3+10*R+D,score=Math.max(w,h*1.15);
+  if(!best||score<best.score)best={k,R,D,w,h,B,score};
+ }
+ return best;
+}
 const furnCache=new Map();
 function furniture(t){
- const k=[t.id,t.x,t.y,t.w,t.h].join(',');let f=furnCache.get(k);if(f)return f;
+ const N=Math.max(1,t.members.length),ck=[t.id,t.x,t.y,t.w,t.h,N,t.color].join(',');let f=furnCache.get(ck);if(f)return f;
  if(furnCache.size>300)furnCache.clear();
- f={items:[],floors:[],block:new Set(),beds:[],desks:[],chairs:[],sofa:[],rooms:{}};
+ f={items:[],floors:[],block:new Set(),beds:[],desks:[],chairs:[],sofa:[],rooms:{},guestBed:null,guestChair:null};
  const add=(type,x,y,w,h,extra={},blocks=true)=>{const it={type,x,y,w,h,key:type+':'+x+','+y,town:t.id,...extra};f.items.push(it);if(blocks)for(let i=0;i<w;i++)for(let j=0;j<h;j++)f.block.add(key(x+i,y+j));return it;};
- const ix0=t.x+1,ix1=t.x+t.w-2,iy0=t.y+2,iy1=t.y+t.h-2,mx=Math.floor((ix0+ix1)/2),my=Math.floor((iy0+iy1)/2);
- const R=f.rooms={kitchen:{x:ix0+1,y:iy0+1,x1:mx-1,y1:my-1},garden:{x:mx+1,y:iy0+1,x1:ix1-1,y1:my-1},bedroom:{x:ix0+1,y:my+1,x1:mx-1,y1:iy1-1},lounge:{x:mx+1,y:my+1,x1:ix1-1,y1:iy1-1}};
- const FLOOR={kitchen:'#e9edf7',garden:'#7bd389',bedroom:'#b58fd6',lounge:'#e7b98a'};
- for(const [n,r] of Object.entries(R))if(r.x1>=r.x&&r.y1>=r.y)f.floors.push({room:n,x:r.x-.5,y:r.y-.5,w:r.x1-r.x+2,h:r.y1-r.y+2,color:FLOOR[n]});
- // kitchen: fridge + counter along the back, tables with four chairs
- let r=R.kitchen;if(r.x1>=r.x){add('fridge',r.x,r.y,1,1);if(r.x1>r.x)add('counter',r.x+1,r.y,r.x1-r.x,1);
-  for(let y=r.y+2;y+2<=r.y1+1;y+=4)for(let x=r.x;x+1<=r.x1;x+=2){add('table',x,y+1,2,1);
-   for(const [cx,cy,face] of [[x,y,-1],[x+1,y,-1],[x,y+2,1],[x+1,y+2,1]])f.chairs.push(add('chair',cx,cy,1,1,{face,seat:[cx,cy]},false));}}
- // garden: planters with benches between them
- r=R.garden;for(let y=r.y;y<=r.y1;y+=2)for(let x=r.x;x<=r.x1;x+=2){add('planter',x,y,1,1,{hue:['#ff6b9a','#ffd166','#c77dff','#5ef2ff'][hash(x+','+y)%4]});if(x+1<=r.x1&&y+1<=r.y1){add('bench',x+1,y+1,1,1,{},false);f.sofa.push([x+1,y+1]);}}
- // bedroom: one bed per resident, reached from the aisle at the foot
- r=R.bedroom;for(let y=r.y;y+1<=r.y1;y+=3)for(let x=r.x;x<=r.x1;x++)f.beds.push(add('bed',x,y,1,2,{foot:[x,y+2],hue:SHIRTS[hash(t.id+x+','+y)%SHIRTS.length]}));
- // lounge: rug, TV, sofa, plants
- r=R.lounge;if(r.x1-r.x>=2&&r.y1-r.y>=2){add('rug',r.x,r.y+1,r.x1-r.x+1,r.y1-r.y,{},false);
-  const sw=Math.min(4,r.x1-r.x);add('tv',r.x+1,r.y,Math.min(2,sw),1);
-  for(let y=r.y+3;y<=r.y1;y+=2){const s=add('sofa',r.x+1,y,sw,1,{},false);for(let i=0;i<sw;i++)f.sofa.push([r.x+1+i,y]);}
-  add('plant',r.x1,r.y,1,1);add('plant',r.x,r.y1,1,1);if(r.x1>r.x+2)add('lamp',r.x1,r.y1,1,1);}
- // seats are drawn where people sit, never blocked
+ const floor=(room,x,y,x1,y1,color)=>f.floors.push({room,x,y,w:x1-x+1,h:y1-y+1,color});
+ const {k,R,D,B}=housePlan(N),IX0=t.x+1,IX1=IX0+4*k-2,IY0=t.y+2,c=(k-1)/2,SX0=IX0+4*c,F0=IY0+10*R,IY1=F0+D-1;
+ const doors=new Set(),walls=new Set(),inSpine=x=>x>=SX0&&x<=SX0+2;
+ // rooms off each corridor: row A behind it (door below), row B in front of it (door above)
+ const slots=[];
+ for(let r=0;r<R;r++){const Y=IY0+10*r;
+  for(let j=0;j<k;j++){if(!(j===c&&r>0))slots.push({x:IX0+4*j,y:Y,front:false,door:[IX0+4*j+1,Y+3]});}
+  for(let j=0;j<k;j++){if(j!==c)slots.push({x:IX0+4*j,y:Y+6,front:true,door:[IX0+4*j+1,Y+5]});}
+  for(const wy of [Y+3,Y+5,Y+9])for(let x=IX0;x<=IX1;x++){if(inSpine(x)&&(wy!==Y+3||r>0))continue;walls.add(key(x,wy));}
+  for(let j=0;j<k-1;j++)for(const yy of [Y,Y+1,Y+2,Y+6,Y+7,Y+8])walls.add(key(IX0+4*j+3,yy));
+  floor('hall',IX0,Y+4,IX1,Y+4,'#c9cdd9');floor('hall',SX0,r?Y:Y+5,SX0+2,Y+9,'#c9cdd9');
+ }
+ // spread bathrooms through the house; then one bedroom per resident; spare rooms become studies / laundry
+ const total=slots.length,type=Array(total).fill(null);
+ for(let s=0;s<total;s++)if(Math.floor((s+1)*B/total)>Math.floor(s*B/total))type[s]='bath';
+ let beds=0,spare=0,guest=false;for(let s=0;s<total;s++)if(!type[s])type[s]=beds<N?(beds++,'bed'):!guest?(guest=true,'guest'):(spare++%2?'laundry':'study');
+ const COL={guest:'#ffd6a5',bed:'#b58fd6',bath:'#9fd8e6',study:'#a3c4f3',laundry:'#d7dbe8'};
+ slots.forEach((s,i)=>{const {x,y,front}=s,ty=type[i],back=front?y+2:y,mid=y+1;doors.add(key(...s.door));floor(ty,x,y,x+2,y+2,COL[ty]);
+  if(ty==='bed'){const by=front?y+1:y;f.beds.push(add('bed',x,by,1,2,{foot:[x+1,y+1],hue:SHIRTS[hash(t.id+i)%SHIRTS.length]}));add('nightstand',x+1,back,1,1);add('wardrobe',x+2,back,1,1);add('rug',x+1,front?y:y+1,2,2,{small:true},false);}
+  else if(ty==='guest'){const by=front?y+1:y;f.guestBed=add('bed',x,by,1,2,{foot:[x+1,y+1],hue:'#ffd166',guest:true});add('nightstand',x+1,back,1,1);add('suitcase',x+2,back,1,1);add('plant',x+2,front?y:y+2,1,1);add('rug',x+1,front?y:y+1,2,2,{small:true},false);}
+  else if(ty==='bath'){add('toilet',x,back,1,1);add('sink',x+1,back,1,1);add('shower',x+2,front?y+1:y,1,2);}
+  else if(ty==='study'){const d=add('desk',x,back,1,1);d.seat=[x,mid];add('bookshelf',x+2,back,1,1);add('plant',x+2,front?y:y+2,1,1);}
+  else{add('washer',x,back,1,1);add('washer',x+1,back,1,1);add('counter',x+2,back,1,1);}
+ });
+ for(const w of walls)if(!doors.has(w)){const [x,y]=w.split(',').map(Number);add('iwall',x,y,1,1,{color:t.color});}
+ // front: living room (left), foyer (middle), kitchen + dining (right)
+ const LX0=IX0,LX1=SX0-1,RX0=SX0+3,RX1=IX1,W=LX1-LX0+1,mid=LX0+Math.floor((W-2)/2),S=Math.ceil(N/Math.max(1,W-2));
+ floor('lounge',LX0,F0,LX1,IY1,'#e7b98a');floor('kitchen',RX0,F0,RX1,IY1,'#e9edf7');floor('hall',SX0,F0,SX0+2,IY1,'#c9cdd9');
+ add('rug',LX0+1,F0+1,W-2,2*S+1,{},false);add('bookshelf',LX0,F0,1,1);add('tv',mid,F0,2,1);add('plant',LX1,F0,1,1);add('coffeetable',mid,F0+2,2,1);
+ for(let s=0;s<S;s++){const y=F0+3+2*s;add('sofa',LX0+1,y,W-2,1,{},false);for(let i=0;i<W-2;i++)f.sofa.push([LX0+1+i,y]);}
+ add('lamp',LX0,F0+3,1,1);add('plant',SX0,F0,1,1);
+ add('sink',RX0,F0,1,1);if(RX1-2>=RX0+1)add('counter',RX0+1,F0,RX1-RX0-2,1);add('stove',RX1-1,F0,1,1);add('fridge',RX1,F0,1,1);
+ let seated=0;for(let y0=F0+2;seated<=N;y0+=4)for(let x=RX0;x+1<=RX1&&seated<=N;x+=3){add('table',x,y0+1,2,1);
+  for(const [cx,cy,face] of [[x,y0,-1],[x+1,y0,-1],[x,y0+2,1],[x+1,y0+2,1]])if(seated<=N){const ch=add('chair',cx,cy,1,1,{face,seat:[cx,cy],guest:seated===N},false);if(seated===N)f.guestChair=ch;else f.chairs.push(ch);seated++;}}
+ f.rooms={lounge:{x:LX0,y:F0+1,x1:LX1,y1:IY1},kitchen:{x:RX0,y:F0+1,x1:RX1,y1:IY1},garden:{x:SX0,y:F0+1,x1:SX0+2,y1:IY1}};
  for(const s of f.sofa)f.block.delete(key(s[0],s[1]));
- furnCache.set(k,f);return f;
+ furnCache.set(ck,f);return f;
 }
-const capacity=t=>{const f=furniture(t);return Math.min(f.beds.length,f.chairs.length);};
-function fitHouse(t){let g=false;if(t.w<14){t.w=14;g=true;}if(t.h<13){t.h=13;g=true;}while(t.w<80&&capacity(t)<Math.max(1,t.members.length)){t.w+=2;t.h+=2;g=true;}return g;}
+function fitHouse(t){const p=housePlan(Math.max(1,t.members.length)),g=t.w!==p.w||t.h!==p.h;t.w=p.w;t.h=p.h;return g;}
 let blockedCache=null;
 function blocked(x,y){
  if(walls.has(key(x,y)))return true;
@@ -300,6 +386,7 @@ function route(t,from,goals){ // breadth-first search over houses, walkways and 
  return null;
 }
 function pickGoal(p,t){
+ if(p.stay&&p.stay.host===t.id){const g=guestGoal(p,t);if(g)return g;}
  const f=furniture(t),i=Math.max(0,t.members.indexOf(p.id));
  if(p.act==='breakfast'&&f.chairs.length){const c=f.chairs[i%f.chairs.length];return {key:c.key,at:c.seat,sit:true,face:c.face};}
  if(p.act==='work'&&hub){const D=hubFurniture(hub).desks;if(D.length){const d=D[[...people.keys()].indexOf(p.id)%D.length];return {key:'hub'+d.key,at:d.seat,sit:true,face:1};}}
@@ -313,8 +400,9 @@ function step(dt){
  if(clockMode==='real'){const d=new Date();clock=d.getHours()*60+d.getMinutes()+d.getSeconds()/60;}else clock=(clock+dt*SPEEDS[clockMode])%1440;
  blockedCache=null;
  for(const p of people.values()){
-  if(drag?.p===p)continue;const t=towns.find(t=>t.id===p.town);if(!t)continue;
-  const act=activityAt(p);
+  if(drag?.p===p)continue;if(lookUp(p))continue;let t=towns.find(t=>t.id===p.town);if(!t)continue;
+  const act=activityAt(p);t=stayHouse(p,t,act);
+  if(p.chat){if(chatOk(p.chat)){p.act=act;chatStep(p,p.chat,dt);continue;}endChat(p.chat);}
   if(act!==p.act||p.planTown!==t.id||!p.path){if(p.lying&&p.goal?.bed){p.x=p.goal.bed.foot[0]+.5;p.y=p.goal.bed.foot[1]+.5;}p.act=act;p.wait=Math.random()*1.5;plan(p,t);}
   if(p.lying||p.sitting&&p.act!=='free'&&p.act!=='home')continue;
   if(p.wait>0){p.wait-=dt;continue;}
@@ -330,12 +418,14 @@ function step(dt){
   if(d<.02){p.path.shift();continue;}
   p.face=dx-dy<0?-1:1;p.x+=dx/d*v;p.y+=dy/d*v;p.walk=(p.walk||0)+dt;
  }
+ social(dt);stepPets(dt);
  if(!step.t||performance.now()-step.t>500){step.t=performance.now();renderClock();}
 }
 function renderClock(){
  const h=Math.floor(clock/60),m=Math.floor(clock%60),working=SHIFTS.filter((_,i)=>townAct({shift:i})==='work').map(x=>x.name),phase=working.length?'Working now: '+working.join(', '):'Shift change';
  $('clock').textContent=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');$('phase').textContent=phase;
  document.querySelectorAll('[data-clock]').forEach(b=>b.classList.toggle('on',b.dataset.clock===clockMode));
+ renderFriendStats();
 }
 document.querySelectorAll('[data-clock]').forEach(b=>b.onclick=()=>{clockMode=b.dataset.clock;try{localStorage.paperCityClock=clockMode;}catch{}renderClock();});
 $('skip').onclick=()=>{if(clockMode==='real')clockMode='normal';const next=ROUTINE.map(r=>r.from).find(f=>f>clock+1)??ROUTINE[0].from;clock=next;renderClock();};
@@ -490,6 +580,17 @@ function drawItem(it,occ,now){
    poly([a,b,c,d],on?'hsl('+((now*40)%360)+',70%,60%)':'#1b1f3a','#0b0b24');if(on)lights.push({...iso(x+w/2,y+.5),Y:iso(x+w/2,y+.5).Y-22,r:60,c:'#c77dff'});break;}
   case 'plant':{box(x+.32,y+.32,.36,.36,0,10,'#c48a5a','#a8754d','#8a5f3c');const p=up(iso(x+.5,y+.5),20);ctx.fillStyle='#4caf50';for(const [ox,oy,r] of [[0,0,8],[-5,3,6],[5,3,6],[0,-6,6]]){ctx.beginPath();ctx.arc(p.X+ox,p.Y+oy,r,0,7);ctx.fill();}ctx.fillStyle='#7bd389';ctx.beginPath();ctx.arc(p.X-2,p.Y-3,3,0,7);ctx.fill();break;}
   case 'planter':{box(x+.12,y+.12,.76,.76,0,12,'#6b4f3a','#8a5f3c','#6e4a2f');const p=up(iso(x+.5,y+.5),14);ctx.fillStyle='#3f8f4a';ctx.beginPath();ctx.ellipse(p.X,p.Y,13,6,0,0,7);ctx.fill();ctx.fillStyle=it.hue;for(const [ox,oy] of [[-6,0],[5,-2],[0,3],[2,-5]]){ctx.beginPath();ctx.arc(p.X+ox,p.Y+oy-3,2.5,0,7);ctx.fill();}break;}
+  case 'iwall':box(x,y,1,1,0,18,shade(it.color,.62),'#6c7296','#565b7c');break;
+  case 'nightstand':{box(x+.2,y+.2,.6,.6,0,9,'#d49a6a','#a8754d','#8a5f3c');const p=up(iso(x+.5,y+.5),9);ctx.fillStyle='#ffd166';ctx.beginPath();ctx.moveTo(p.X-4,p.Y-2);ctx.lineTo(p.X+4,p.Y-2);ctx.lineTo(p.X+2,p.Y-9);ctx.lineTo(p.X-2,p.Y-9);ctx.fill();lights.push({X:p.X,Y:p.Y-6,r:26,c:'#ffd166'});break;}
+  case 'wardrobe':{box(x+.1,y+.15,.8,.7,0,34,'#c9a27e','#a8754d','#8a5f3c');const a=up(iso(x+.5,y+.85),4),b=up(iso(x+.5,y+.85),30);ctx.strokeStyle='#6e4a2f';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(a.X,a.Y);ctx.lineTo(b.X,b.Y);ctx.stroke();break;}
+  case 'toilet':box(x+.25,y+.3,.5,.5,0,8,'#ffffff','#dfe3f3','#c3c9e0');box(x+.25,y+.12,.5,.2,0,16,'#f4f6fb','#dfe3f3','#c3c9e0');break;
+  case 'sink':{box(x+.15,y+.15,.7,.55,0,14,'#f4f6fb','#dfe3f3','#c3c9e0');const p=up(iso(x+.5,y+.42),14);ctx.fillStyle='#8ecae6';ctx.beginPath();ctx.ellipse(p.X,p.Y,7,3.5,0,0,7);ctx.fill();break;}
+  case 'shower':{flat(x+.05,y+.05,.9,h-.1,1,'#bde7f2','#8ecae6');ctx.globalAlpha=.35;box(x+.05,y+.05,.9,h-.1,0,36,'#ffffff00','#bde7f2','#8ecae6');ctx.globalAlpha=1;const p=up(iso(x+.3,y+.3),34);ctx.fillStyle='#9aa3c7';ctx.beginPath();ctx.ellipse(p.X,p.Y,4,2,0,0,7);ctx.fill();break;}
+  case 'washer':{box(x+.1,y+.1,.8,.8,0,16,'#f4f6fb','#dfe3f3','#c3c9e0');const p=up(iso(x+.5,y+.9),8);ctx.fillStyle='#5ef2ff88';ctx.beginPath();ctx.ellipse(p.X,p.Y,5,4,0,0,7);ctx.fill();ctx.strokeStyle='#9aa3c7';ctx.stroke();break;}
+  case 'stove':{box(x+.05,y+.1,.9,.8,0,16,'#3b4163','#2a2e45','#1b1f3a');const on=townAct(towns.find(q=>q.id===it.town))==='breakfast';for(const [dx,dy] of [[.3,.3],[.7,.3],[.3,.7],[.7,.7]]){const p=up(iso(x+dx,y+dy),16);ctx.strokeStyle=on?'#ff7b54':'#6c7296';ctx.lineWidth=1.5;ctx.beginPath();ctx.ellipse(p.X,p.Y,4,2,0,0,7);ctx.stroke();}break;}
+  case 'bookshelf':{box(x+.1,y+.2,.8,.6,0,32,'#a8754d','#8a5f3c','#6e4a2f');const BK=['#e76f51','#2a9d8f','#e9c46a','#8ecae6','#cdb4db'];for(let s=0;s<3;s++)for(let i=0;i<4;i++){const p=up(iso(x+.2+i*.17,y+.8),6+s*9);ctx.fillStyle=BK[(i+s+x)%5];ctx.fillRect(p.X-1.5,p.Y-7,3,7);}break;}
+  case 'suitcase':{box(x+.25,y+.3,.5,.4,0,12,'#e76f51','#c4553a','#a3432c');const p=up(iso(x+.5,y+.5),12);ctx.strokeStyle='#3b4163';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(p.X-3,p.Y);ctx.lineTo(p.X-3,p.Y-4);ctx.lineTo(p.X+3,p.Y-4);ctx.lineTo(p.X+3,p.Y);ctx.stroke();break;}
+  case 'coffeetable':box(x+.1,y+.25,w-.2,.5,0,7,'#d49a6a','#a8754d','#8a5f3c');break;
   case 'bench':box(x+.15,y+.3,.7,.4,0,6,'#d49a6a','#a8754d','#8a5f3c');break;
   case 'lamp':{box(x+.42,y+.42,.16,.16,0,26,'#9aa3c7','#6c7296','#565b7c');const p=up(iso(x+.5,y+.5),30);ctx.fillStyle='#ffd166';ctx.beginPath();ctx.moveTo(p.X-7,p.Y+4);ctx.lineTo(p.X+7,p.Y+4);ctx.lineTo(p.X+4,p.Y-6);ctx.lineTo(p.X-4,p.Y-6);ctx.fill();lights.push({X:p.X,Y:p.Y,r:70,c:'#ffd166'});break;}
  }
@@ -508,13 +609,13 @@ function drawGlow(dark){
 function tileOutline(x,y,col){ctx.lineWidth=2;poly([iso(x,y),iso(x+1,y),iso(x+1,y+1),iso(x,y+1)],col+'33',col);}
 function draw(){
  const d=devicePixelRatio||1,W=canvas.width/d,H=canvas.height/d,now=performance.now()/1000;
- ctx.setTransform(d,0,0,d,0,0);background(W,H,now);
+ ctx.setTransform(d,0,0,d,0,0);background(W,H,now);drawShootingStars(W,H);
  ctx.setTransform(cam.z*d,0,0,cam.z*d,-cam.x*cam.z*d,-cam.y*cam.z*d);
  const placed=towns.map(t=>{let tx=t.x,ty=t.y;if(drag?.kind==='town'&&drag.t===t){tx+=drag.dx;ty+=drag.dy;}return {t,tx,ty};});
  placed.sort((a,b)=>(a.tx+a.ty)-(b.tx+b.ty));
  lights=[];const occ=new Map();for(const p of people.values())if(p.arrived&&(p.sitting||p.lying)&&p.goal)occ.set(p.goal.key,p);
  for(const p of placed){drawPlatform(p.t,p.tx,p.ty,now);const f=furniture({...p.t,x:p.tx,y:p.ty});for(const fl of f.floors){flat(fl.x,fl.y,fl.w,fl.h,0,fl.color+'38',fl.color+'66');}
-  for(const it of f.items)if(it.type==='rug'){flat(it.x+.1,it.y+.1,it.w-.2,it.h-.2,.5,'#e76f5155','#e76f51');flat(it.x+.4,it.y+.4,it.w-.8,it.h-.8,.6,null,'#f4a26188');}
+  for(const it of f.items)if(it.type==='rug'&&it.small){flat(it.x+.1,it.y+.1,it.w-.2,it.h-.2,.5,'#ffafcc55','#ffafcc');}else if(it.type==='rug'){flat(it.x+.1,it.y+.1,it.w-.2,it.h-.2,.5,'#e76f5155','#e76f51');flat(it.x+.4,it.y+.4,it.w-.8,it.h-.8,.6,null,'#f4a26188');}
   houseShell(p.t,p.tx,p.ty,true);}
  const hx=hub?hub.x+(drag?.kind==='town'&&drag.t===hub?drag.dx:0):0,hy=hub?hub.y+(drag?.kind==='town'&&drag.t===hub?drag.dy:0):0,HF=hub&&hubFurniture({...hub,x:hx,y:hy});
  if(hub){drawPlatform(hub,hx,hy,now);flat(hx+1,hy+2,hub.w-2,hub.h-3,.3,'#5ef2ff14','#5ef2ff55');}
@@ -525,21 +626,22 @@ function draw(){
  for(const k of walls){const [x,y]=k.split(',').map(Number),c=iso(x+.5,y+.5);if(c.X<V.X-TW||c.X>V2.X+TW||c.Y<V.Y-TH||c.Y>V2.Y+TH*3)continue;items.push({z:x+y+1,w:[x,y]});}
  for(const {t,tx,ty} of placed)for(const it of furniture({...t,x:tx,y:ty}).items)if(it.type!=='rug')items.push({z:it.x+it.y+(it.w+it.h)/2-(it.type==='chair'?.02:0),it});
  if(HF)for(const it of HF.items)items.push({z:it.x+it.y+(it.w+it.h)/2-(it.type==='chair'?.02:0),it:{...it,key:'hub'+it.key}});
- for(const p of people.values())if(!p.lying)items.push({z:p.x+p.y+.01,p});
+ for(const p of people.values())if(!p.lying)items.push({z:p.x+p.y+.01,p});petItems(items);
  for(const {t,tx,ty} of placed)items.push({z:tx+ty+t.w+t.h+.5,front:[t,tx,ty]});
  items.sort((a,b)=>a.z-b.z);
- for(const it of items)it.w?drawWall(it.w[0],it.w[1],now):it.it?drawItem(it.it,occ,now):it.front?houseShell(...it.front,false):drawPerson(it.p,now);
+ for(const it of items)it.w?drawWall(it.w[0],it.w[1],now):it.it?drawItem(it.it,occ,now):it.front?houseShell(...it.front,false):it.pet?drawPet(it.pet,now):drawPerson(it.p,now);
  const dark=darkness();if(dark>0){ctx.save();ctx.setTransform(d,0,0,d,0,0);ctx.fillStyle='rgba(4,6,30,'+dark+')';ctx.fillRect(0,0,W,H);ctx.restore();drawGlow(dark);}
+ drawFriendLines(now);
  for(const p of placed)drawSign(p.t,p.tx,p.ty,now);if(hub)drawSign(hub,hx,hy,now);
  const list=[...people.values()].filter(p=>!p.lying);
  if(cam.z>=.55){ctx.font='11px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';
   for(const p of list){const n=nameOf(p.row),label=(n.length>20?n.slice(0,19)+'…':n)+(p.row.year?' · '+p.row.year:''),w=ctx.measureText(label).width+10,f=iso(p.x,p.y),x=f.X,y=f.Y+8;
    ctx.fillStyle=selected===p.id?'#5ef2ff':'#0d1030cc';ctx.beginPath();ctx.roundRect(x-w/2,y,w,15,4);ctx.fill();ctx.fillStyle=selected===p.id?'#0d1030':'#dfe6ff';ctx.fillText(label,x,y+8);}}
- for(const p of list){const a=bubbleAlpha(p,now);if(a>0)drawBubble(p,a);}
+ for(const p of list){if(p.looking){drawWow(p,now);continue;}if(p.chat){drawChat(p,now);continue;}const a=bubbleAlpha(p,now);if(a>0)drawBubble(p,a,soloLine(p,now));}
 }
 // Speech bubbles: each resident says its Notes.
 function bubbleAlpha(p,now){
- if(p.lying||!(p.row.notes||'').trim())return 0;
+ if(p.lying||!noteLines(p.row).length)return 0;
  if(selected===p.id||hoverP===p)return 1;
  if(bubbleMode==='off'||cam.z<.45)return 0;if(bubbleMode==='always')return 1;
  const c=(now+(hash(p.id)%1000)/50)%16;return c>6?0:Math.min(1,c*3,(6-c)*3);
@@ -551,11 +653,11 @@ function wrap(text,max,lines){
  if(out.join(' ').length<flat.length){let l=out[out.length-1];while(l&&ctx.measureText(l+'…').width>max)l=l.slice(0,-1);out[out.length-1]=l+'…';}
  return out;
 }
-function drawBubble(p,a){
+function drawBubble(p,a,text=p.row.notes,tint){
  const full=selected===p.id||hoverP===p;ctx.save();ctx.globalAlpha=a;ctx.font='12px system-ui';ctx.textAlign='left';ctx.textBaseline='top';
- const lines=wrap(p.row.notes,170,full?8:3),w=Math.max(...lines.map(l=>ctx.measureText(l).width))+16,h=lines.length*15+10;
+ const lines=wrap(text,170,full?8:tint?4:3),w=Math.max(...lines.map(l=>ctx.measureText(l).width))+16,h=lines.length*15+10;
  const f=iso(p.x,p.y),x=f.X,bx=x-w/2,by=f.Y-46-h;
- ctx.fillStyle='#f4f6ffee';ctx.strokeStyle=full?'#5ef2ff':'#9aa3c7';ctx.lineWidth=1.5;ctx.shadowColor='#5ef2ff';ctx.shadowBlur=full?12:0;
+ ctx.fillStyle='#f4f6ffee';ctx.strokeStyle=full?'#5ef2ff':tint||'#9aa3c7';ctx.lineWidth=1.5;ctx.shadowColor=tint||'#5ef2ff';ctx.shadowBlur=full||tint?12:0;
  ctx.beginPath();ctx.roundRect(bx,by,w,h,8);ctx.moveTo(x-6,by+h);ctx.lineTo(x,by+h+8);ctx.lineTo(x+6,by+h);ctx.fill();ctx.stroke();ctx.shadowBlur=0;
  ctx.fillRect(x-5,by+h-2,10,3);
  ctx.fillStyle='#14183a';lines.forEach((l,i)=>ctx.fillText(l,bx+8,by+6+i*15));ctx.restore();
@@ -573,11 +675,14 @@ function drawPerson(p,now){
  ctx.fillStyle=(Math.sin(now*4+h)>0)?'#7CFC9A':'#ff5d73';ctx.fillRect(x-2+face*2,y-19,3,3);
  ctx.fillStyle='#f4f6fb';ctx.beginPath();ctx.arc(x,y-29,9,0,7);ctx.fill();ctx.strokeStyle='#b8bfd4';ctx.lineWidth=1;ctx.stroke();
  const v=ctx.createLinearGradient(x-6,y-34,x+6,y-24);v.addColorStop(0,'#5ef2ff');v.addColorStop(.5,'#1b2a6b');v.addColorStop(1,'#0b1033');
- ctx.fillStyle=v;ctx.beginPath();ctx.ellipse(x+face*2,y-29,6,4.5,0,0,7);ctx.fill();
+ const lu=p.looking?3:0;ctx.fillStyle=v;ctx.beginPath();ctx.ellipse(x+face*(2+lu*.6),y-29-lu,6,4.5,0,0,7);ctx.fill();
  ctx.fillStyle='#ffffffaa';ctx.fillRect(x+face*2-3,y-31,2,1.5);
  ctx.strokeStyle='#b8bfd4';ctx.beginPath();ctx.moveTo(x-face*5,y-36);ctx.lineTo(x-face*7,y-42);ctx.stroke();ctx.fillStyle=suit;ctx.beginPath();ctx.arc(x-face*7,y-42,1.8,0,7);ctx.fill();
  drawProp(p,x,y,face,now);
+ if(p.chat?.kind==='hub'&&p.ready){const mx=x+face*8;ctx.fillStyle='#f4f6fb';ctx.fillRect(mx-3,y-18,6,7);ctx.fillStyle='#6f4e37';ctx.fillRect(mx-2,y-17,4,2);ctx.strokeStyle='#ffffff88';ctx.lineWidth=1;ctx.beginPath();const s=(now*20)%6;ctx.moveTo(mx,y-20-s);ctx.lineTo(mx+1,y-24-s);ctx.stroke();} // coffee at the Hub
  if(p.row.screenshot){ctx.fillStyle='#5ef2ff';ctx.globalAlpha=.8;ctx.fillRect(x+8,y-20,7,9);ctx.globalAlpha=1;ctx.strokeStyle='#fff';ctx.strokeRect(x+8,y-20,7,9);}
 }
+initFriends();
+$('stars').onclick=startShower;
 let last=performance.now();
 (function loop(t){step(Math.min(.1,(t-last)/1000));last=t;draw();requestAnimationFrame(loop);})(last);

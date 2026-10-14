@@ -21,7 +21,7 @@ function render(){
  release();$('rows').replaceChildren();$('title').textContent=data?.name||'Your evidence library';$('search').disabled=!data;
  $('save').disabled=!dir||!data;$('section').disabled=!dir||!data;$('reload').disabled=!dir;
  $('folder').disabled=$('json').disabled=false;
- const query=$('search').value.toLowerCase();const filtered=(data?.rows||[]).filter(r=>(r.kind==='section'?r.title:[r.keyword,r.year||'',r.notes||'',r.sentence,r.link].join(' ')).toLowerCase().includes(query));
+ const query=$('search').value.toLowerCase();const filtered=(data?.rows||[]).filter(r=>(r.kind==='section'?r.title:[r.keyword,r.year||'',r.notes||'',r.bibtex||'',r.sentence,r.link].join(' ')).toLowerCase().includes(query));
  const pages=Math.max(1,Math.ceil(filtered.length/pageSize));page=Math.min(page,pages-1);$('count').textContent=filtered.length+' rows · Page '+(page+1)+' of '+pages;$('prev').disabled=page===0;$('next').disabled=page>=pages-1;
  $('empty').hidden=!!data;$('table').hidden=!data;
  for(const row of filtered.slice(page*pageSize,(page+1)*pageSize)){
@@ -41,7 +41,7 @@ function render(){
    if(/^https?:\/\//i.test(row.link)){const a=document.createElement('a');a.href=row.link;a.target='_blank';a.rel='noopener noreferrer';a.textContent='Open link ↗';cells[2].append(a);}
    const actions=document.createElement('div');actions.className='row';
    for(const [label,type] of [['Refresh sentence','refresh'],['Find instances','find']]){const b=document.createElement('button');b.textContent=label;b.disabled=!sync;b.onclick=control(()=>sendRequest(type,row.id));actions.append(b);}actions.hidden=web;cells[1].append(actions);
-   const notesLabel=document.createElement('label');notesLabel.textContent='Notes';const notes=document.createElement('textarea');notes.value=row.notes||'';notes.placeholder='Add your notes…';notes.setAttribute('aria-label','Notes for '+row.keyword);notes.disabled=!dir;notes.oninput=()=>{row.notes=notes.value;edited();};notesLabel.append(notes);cells[1].append(notesLabel);
+   const notesLabel=document.createElement('label');notesLabel.textContent='Notes';const notes=document.createElement('textarea');notes.value=row.notes||'';notes.placeholder='Add your notes…';notes.setAttribute('aria-label','Notes for '+row.keyword);notes.disabled=!dir;notes.oninput=()=>{row.notes=notes.value;edited();};notesLabel.append(notes);cells[1].append(notesLabel);cells[1].append(Bib.field(row,{disabled:!dir,onEdit:()=>edited(),tell}));
    if(dir){
     const upload=document.createElement('input');upload.type='file';upload.accept='image/png,image/jpeg,image/webp';upload.setAttribute('aria-label','Screenshot for '+row.keyword);upload.onchange=control(async()=>{if(upload.files[0])await attachImage(row,upload.files[0]);});cells[3].append(upload);
     const paste=document.createElement('button');paste.textContent='Paste screenshot';paste.onclick=control(async()=>{for(const item of await navigator.clipboard.read()){const type=item.types.find(t=>['image/png','image/jpeg','image/webp'].includes(t));if(type){await attachImage(row,await item.getType(type));return;}}throw Error('No image in the clipboard.');});
@@ -83,7 +83,10 @@ function lockConflicts(){
  $('save').disabled=$('section').disabled=foregroundBusy||blocked||!sync;
 }
 function showConflicts(result){renderSyncConflicts($('conflicts'),result.conflicts,data,(key,value)=>control(async()=>{applyResult(await sync.resolve(key,value));tell(sync.conflicts.length?'Resolve the remaining versions.':'Conflict resolved.');})(),dir);lockConflicts();}
-function applyResult(result){const changed=JSON.stringify(data?.rows)!==JSON.stringify(result.data.rows);data=result.data;dirty=false;if(changed)render();showConflicts(result);if(result.conflicts.length)tell('Conflicting edits found. Choose a version below.');else if(result.snapshotError)tell(result.snapshotError);}
+function applyResult(result){const changed=JSON.stringify(data?.rows)!==JSON.stringify(result.data.rows);
+ // Keep the on-screen rows when nothing changed, so buttons and boxes still edit the rows in the library
+ // (replacing them silently made Remove and some edits do nothing).
+ if(changed||!data)data=result.data;else{data.revision=result.data.revision;data.name=result.data.name;}dirty=false;if(changed)render();showConflicts(result);if(result.conflicts.length)tell('Conflicting edits found. Choose a version below.');else if(result.snapshotError)tell(result.snapshotError);}
 async function flush(){
  if(!sync)return;if(sync.conflicts.length)throw Error('Resolve the conflicting versions first.');
  const generation=editGeneration,sent=structuredClone(data),images=new Map(pending);

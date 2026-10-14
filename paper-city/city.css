@@ -28,3 +28,14 @@ main{flex:1;position:relative}canvas{display:block;width:100%;height:100%;touch-
 .ctx-new{display:flex;gap:6px;margin-top:6px;padding-top:8px;border-top:1px solid var(--line)}.ctx-new input{flex:1;min-width:0}.ctx-new button{flex:none;padding:5px 9px;font-size:13px}
 .town select.shift{margin-top:6px;font-size:13px;padding:4px 6px}
 .callhome{flex:1;font-weight:600;border-color:#ffd166;color:#ffd166}.callhome.on,.town button.on{background:#ffd166;color:#07071a;border-color:#ffd166}
+.check{display:flex;align-items:center;gap:8px;font-size:13px;color:#dfe6ff;margin:4px 0;cursor:pointer}.check input{width:auto;accent-color:#ff8fd8}
+#card-friends{margin-top:10px}.friends-title{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:#ff8fd8;margin:4px 0 6px}
+.friend{display:flex;align-items:center;gap:7px;width:100%;text-align:left;margin:0 0 5px;padding:6px 9px;font-size:13px;flex-wrap:wrap}.friend .dot{width:10px;height:10px}.friend:hover{border-color:#ff8fd8;box-shadow:0 0 8px #ff8fd844}
+.occ-head{font-size:12px;color:#9aa3c7;padding:6px 6px 2px}.occ-act{display:block;font-size:12px;color:#9aa3c7}
+.notes-label{display:block;margin:12px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:#ff8fd8}
+#card-notes{width:100%;font:inherit;font-size:14px;padding:8px;border:1px solid var(--line);border-radius:8px;color:#fff;background:#07071a;resize:vertical}#card-notes:focus{outline:2px solid #ff8fd8;outline-offset:1px}#card-notes:disabled{opacity:.6}
+#card-notes-status{margin:4px 0 0;min-height:18px}
+.friend-row{display:flex;gap:6px;align-items:stretch;margin:0 0 5px}.friend-row .friend{margin:0;flex:1;min-width:0}.invite{flex:none;font-size:12px;padding:4px 8px;border-color:#ffd166;color:#ffd166}.invite:disabled{opacity:.5;cursor:default;box-shadow:none}
+.bib{margin-top:12px}.bib label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:#5ef2ff}.bib textarea{width:100%;margin-top:4px;font:12px/1.45 ui-monospace,Menlo,monospace;padding:8px;border:1px solid var(--line);border-radius:8px;color:#dfe6ff;background:#07071a;resize:vertical;text-transform:none;letter-spacing:0}.bib textarea:focus{outline:2px solid #5ef2ff;outline-offset:1px}
+.bib-out{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:6px}.bib-cite{background:#1b2160;color:#fff;padding:5px 9px;border-radius:6px;font-size:13px;overflow-wrap:anywhere}.bib-copy{padding:5px 10px;font-size:13px}.bib-note{font-size:12px;color:#ffd166}
+.stars{width:100%;font-weight:600;border-color:#c77dff;color:#e0aaff;background:linear-gradient(90deg,#1b1740,#2a0d44)}.stars:hover{box-shadow:0 0 12px #c77dff88;border-color:#e0aaff}
