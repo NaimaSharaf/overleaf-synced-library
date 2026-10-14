@@ -14,6 +14,14 @@
  <p class="small" id="hint"></p>
  <label class="small" for="bubbles">Speech bubbles (from Notes)</label>
  <select id="bubbles"><option value="turns">Take turns talking</option><option value="always">Always show</option><option value="off">Only on hover / click</option></select>
+ <h2>Friends</h2>
+ <label class="check"><input type="checkbox" id="chats" checked> Friends meet up and chat</label>
+ <label class="check"><input type="checkbox" id="stays" checked> Friends stay over in guest rooms</label>
+ <label class="check"><input type="checkbox" id="friend-lines"> Show friendship lines</label>
+ <p class="small" id="friend-stats"></p>
+ <p class="small">Papers that share distinctive words become friends. They chat in the lounge, visit each other's houses in their free time, and take coffee breaks together at the Work Hub.</p>
+ <h2>Sky</h2>
+ <button id="stars" class="stars">🌠 Shooting stars</button>
  <h2>Daily routine</h2>
  <div class="clockrow"><span id="clock">07:00</span><span id="phase" class="small"></span></div>
  <div class="row clockbtns"><button data-clock="pause">Pause</button><button data-clock="normal">Play</button><button data-clock="fast">Fast</button><button data-clock="real">Real time</button><button id="skip">Next ▸</button></div>
@@ -29,10 +37,15 @@
   <button id="card-close" class="x" aria-label="Close">×</button>
   <h2 id="card-name"></h2><p id="card-meta" class="small"></p>
   <p id="card-text"></p>
+  <label for="card-notes" class="notes-label">Notes · what this paper says</label>
+  <textarea id="card-notes" rows="5" placeholder="One sentence per line. This paper says these lines when it talks and chats. Same Notes as in your viewer."></textarea>
+  <p id="card-notes-status" class="small"></p>
+  <div id="card-bib"></div>
+  <div id="card-friends"></div>
   <a id="card-link" target="_blank" rel="noopener">Open link ↗</a>
   <img id="card-img" alt="Screenshot" hidden>
  </section>
  <div id="ctx" class="ctxmenu" hidden></div>
  <div id="zoom"><button id="zin">+</button><button id="zout">−</button><button id="fit">Fit</button></div>
 </main>
-<script src="library.js"></script><script src="sync.js"></script><script src="city.js"></script></body></html>
+<script src="library.js"></script><script src="sync.js"></script><script src="bibtex.js"></script><script src="friends.js"></script><script src="sky.js"></script><script src="pets.js"></script><script src="city.js"></script></body></html>

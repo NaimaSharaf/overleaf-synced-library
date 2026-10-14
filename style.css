@@ -5,3 +5,4 @@
 #keyword-find{max-width:100%;overflow-wrap:anywhere;font-weight:600}#results p{white-space:pre-wrap;overflow-wrap:anywhere}
 
 .weblink-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.weblink-row input{flex:1;min-width:160px}.weblink-row button{flex-shrink:0}
+.bib{margin-top:10px}.bib textarea{min-height:110px;font:13px/1.45 ui-monospace,Menlo,monospace}.bib-out{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:6px}.bib-cite{background:#e3ede4;padding:6px 9px;border-radius:6px;font-size:14px;overflow-wrap:anywhere}.bib-copy{padding:6px 11px;font-size:14px}.bib-note{font-size:13px;color:#805120}

@@ -1,0 +1,7 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Saved PDFs</title><link rel="stylesheet" href="style.css">
+<style>body{max-width:1000px;margin:auto}.pdfs{list-style:none;padding:0;margin:12px 0}.pdfs li{display:flex;align-items:center;gap:12px;padding:10px 12px;background:#fff;border:1px solid #d6e1d7;border-radius:8px;margin:0 0 6px}.pdfs .name{flex:1;min-width:0;overflow-wrap:anywhere;font-weight:600}.pdfs .meta{font-size:13px;color:#647b6b;white-space:nowrap}.pdfs button{padding:6px 11px;font-size:14px}</style>
+<body><h1 id="title">Saved PDFs</h1><p id="where" class="small"></p>
+<div class="row"><button id="grant" class="primary" hidden>Allow access to the PDF folder</button><button id="refresh">Refresh</button></div>
+<input id="search" type="search" placeholder="Search PDFs by name" aria-label="Search PDFs"><p id="status" role="status"></p><ul id="list" class="pdfs"></ul>
+<p class="small">These are the PDFs in the folder you chose with “Choose PDF folder” in the capture panel, newest first. Click Open to read one in a new tab. Chrome can’t open Finder at a chosen folder, so this page lists it instead.</p>
+<script src="pdf-folder.js"></script></body></html>
