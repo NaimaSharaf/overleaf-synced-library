@@ -43,18 +43,36 @@ function render(){
    for(const [label,type] of [['Refresh sentence','refresh'],['Find instances','find']]){const b=document.createElement('button');b.textContent=label;b.disabled=!sync;b.onclick=control(()=>sendRequest(type,row.id));actions.append(b);}actions.hidden=web;cells[1].append(actions);
    const notesLabel=document.createElement('label');notesLabel.textContent='Notes';const notes=document.createElement('textarea');notes.value=row.notes||'';notes.placeholder='Add your notes…';notes.setAttribute('aria-label','Notes for '+row.keyword);notes.disabled=!dir;notes.oninput=()=>{row.notes=notes.value;edited();};notesLabel.append(notes);cells[1].append(notesLabel);cells[1].append(Bib.field(row,{disabled:!dir,onEdit:()=>edited(),tell}));
    if(dir){
-    const upload=document.createElement('input');upload.type='file';upload.accept='image/png,image/jpeg,image/webp';upload.setAttribute('aria-label','Screenshot for '+row.keyword);upload.onchange=control(async()=>{if(upload.files[0])await attachImage(row,upload.files[0]);});cells[3].append(upload);
-    const paste=document.createElement('button');paste.textContent='Paste screenshot';paste.onclick=control(async()=>{for(const item of await navigator.clipboard.read()){const type=item.types.find(t=>['image/png','image/jpeg','image/webp'].includes(t));if(type){await attachImage(row,await item.getType(type));return;}}throw Error('No image in the clipboard.');});
-    paste.addEventListener('paste',event=>{event.preventDefault();const file=Array.from(event.clipboardData.items).find(i=>i.kind==='file'&&i.type.startsWith('image/'))?.getAsFile();if(file)control(()=>attachImage(row,file))();else tell('No image in the clipboard.');});cells[3].append(paste);
-    if(row.screenshot){const removeImage=document.createElement('button');removeImage.textContent='Remove screenshot';removeImage.onclick=()=>{pending.delete(row.screenshot);row.screenshot='';edited();render();};cells[3].append(removeImage);}
+    const upload=document.createElement('input');upload.type='file';upload.multiple=true;upload.accept='image/png,image/jpeg,image/webp';upload.title='Add one or more screenshots';upload.setAttribute('aria-label','Add screenshots for '+row.keyword);upload.onchange=control(async()=>{for(const file of upload.files)await attachImage(row,file);});cells[3].append(upload);
+    const paste=document.createElement('button');paste.textContent=Library.shots(row).length?'Paste another screenshot':'Paste screenshot';paste.onclick=control(async()=>{for(const item of await navigator.clipboard.read()){const type=item.types.find(t=>['image/png','image/jpeg','image/webp'].includes(t));if(type){await attachImage(row,await item.getType(type));return;}}throw Error('No image in the clipboard.');});
+    paste.addEventListener('paste',event=>{event.preventDefault();const files=Array.from(event.clipboardData.items).filter(i=>i.kind==='file'&&i.type.startsWith('image/')).map(i=>i.getAsFile()).filter(Boolean);if(files.length)control(async()=>{for(const file of files)await attachImage(row,file);})();else tell('No image in the clipboard.');});cells[3].append(paste);
+    if(Library.shots(row).length){const removeImage=document.createElement('button');removeImage.textContent=Library.shots(row).length>1?'Remove all screenshots':'Remove screenshot';removeImage.onclick=()=>{const list=Library.shots(row);if(list.length>1&&!confirm('Remove all '+list.length+' screenshots from '+row.keyword+'?'))return;for(const p of list)pending.delete(p);Library.setShots(row,[]);edited();render();};cells[3].append(removeImage);}
    }
-   if(row.screenshot){
-    const button=document.createElement('button');button.textContent='Show screenshot';const preview=document.createElement('div');preview.className='image-cell';sentence.after(preview);cells[3].append(button);let opened=false,token=0,url=null;
-    button.onclick=async()=>{token++;const request=token;if(opened){preview.replaceChildren();if(url){URL.revokeObjectURL(url);urls.delete(url);}url=null;opened=false;button.textContent='Show screenshot';return;}
-     button.disabled=true;try{const img=document.createElement('img');img.loading='lazy';img.decoding='async';img.alt='Screenshot for '+row.keyword;
-      if(dir){const blob=await Library.image(dir,row.screenshot,pending);if(!tr.isConnected||request!==token)return;url=URL.createObjectURL(blob);urls.add(url);img.src=url;}
-      else img.src=row.screenshot;
-      img.onerror=()=>{tell('Screenshot could not be loaded. Open viewer.html from the library folder, or use Open library folder.');};preview.append(img);opened=true;button.textContent='Hide screenshot';
+   const shotPaths=Library.shots(row);
+   if(shotPaths.length){
+    // Every screenshot for this entry, in order, under its sentence. Reorder or remove each one.
+    const button=document.createElement('button'),preview=document.createElement('div');preview.className='image-cell';sentence.after(preview);cells[3].append(button);
+    let opened=false,token=0,mine=[];
+    const label=()=>(opened?'Hide ':'Show ')+(shotPaths.length>1?shotPaths.length+' screenshots':'screenshot');button.textContent=label();
+    const setList=list=>{for(const p of shotPaths)if(!list.includes(p))pending.delete(p);Library.setShots(row,list);edited();render();};
+    button.onclick=async()=>{token++;const request=token;
+     if(opened){preview.replaceChildren();for(const u of mine){URL.revokeObjectURL(u);urls.delete(u);}mine=[];opened=false;button.textContent=label();return;}
+     button.disabled=true;try{
+      const figures=[];
+      for(const [i,path] of shotPaths.entries()){
+       const figure=document.createElement('figure');figure.className='shot';
+       const img=document.createElement('img');img.loading='lazy';img.decoding='async';img.alt='Screenshot '+(i+1)+' for '+row.keyword;
+       img.onerror=()=>{tell('Screenshot could not be loaded. Open viewer.html from the library folder, or use Open library folder.');};
+       if(dir){try{const blob=await Library.image(dir,path,pending);if(!tr.isConnected||request!==token)return;const url=URL.createObjectURL(blob);urls.add(url);mine.push(url);img.src=url;figure.append(img);}catch(e){const p=document.createElement('p');p.textContent='Screenshot '+(i+1)+': '+e.message;figure.append(p);}}
+       else{img.src=path;figure.append(img);}
+       const bar=document.createElement('figcaption');bar.className='shot-bar';const count=document.createElement('span');count.textContent=(i+1)+' of '+shotPaths.length;bar.append(count);
+       if(dir)for(const [text,title,act] of [['↑','Move earlier',()=>{const l=[...shotPaths];[l[i-1],l[i]]=[l[i],l[i-1]];setList(l);}],['↓','Move later',()=>{const l=[...shotPaths];[l[i+1],l[i]]=[l[i],l[i+1]];setList(l);}],['✕','Remove this screenshot',()=>setList(shotPaths.filter((_,j)=>j!==i))]]){
+        if((text==='↑'&&i===0)||(text==='↓'&&i===shotPaths.length-1))continue;
+        const b=document.createElement('button');b.type='button';b.className='shot-btn';b.textContent=text;b.title=title;b.setAttribute('aria-label',title+' ('+(i+1)+')');b.onclick=act;bar.append(b);}
+       figure.append(bar);figures.push(figure);
+      }
+      preview.replaceChildren(...figures);opened=true;button.textContent=label();
+      for(const im of preview.querySelectorAll('.shot img')){im.title='Click to enlarge';im.onclick=()=>{const srcs=[...preview.querySelectorAll('.shot img')].map(x=>x.src);Library.enlarge(srcs,srcs.indexOf(im.src),'Screenshot for '+row.keyword);};}
      }catch(e){tell(e.message);}finally{button.disabled=false;}
     };
     queueMicrotask(()=>{if(tr.isConnected)button.onclick();});
@@ -73,8 +91,9 @@ $('search').oninput=()=>{page=0;render();};$('prev').onclick=()=>{page--;render(
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});render();
 
 async function attachImage(row,file){
- const blob=await Library.picture(file);if(row.screenshot)pending.delete(row.screenshot);
- row.screenshot='images/'+Library.uuid()+'.png';pending.set(row.screenshot,blob);edited();
+ // Adds another screenshot to the entry (earlier ones are kept).
+ const blob=await Library.picture(file),path='images/'+Library.uuid()+'.png';pending.set(path,blob);
+ Library.setShots(row,[...Library.shots(row),path]);edited();
 }
 function lockConflicts(){
  const blocked=!!sync?.conflicts.length;
@@ -91,7 +110,7 @@ async function flush(){
  if(!sync)return;if(sync.conflicts.length)throw Error('Resolve the conflicting versions first.');
  const generation=editGeneration,sent=structuredClone(data),images=new Map(pending);
  const result=await sync.save(sent,images);
- for(const [path] of pending)if(sent.rows.some(r=>r.screenshot===path))pending.delete(path);
+ for(const [path] of pending)if(sent.rows.some(r=>Library.shots(r).includes(path)))pending.delete(path);
  if(generation!==editGeneration){Object.assign(sync,result.localContext);dirty=true;return;}
  applyResult(result);if(!result.conflicts.length&&!result.snapshotError)tell('Synchronized with the capture extension.');
 }

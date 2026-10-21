@@ -2,6 +2,10 @@
 
 #conflicts{border:2px solid #b57a28;background:#fff6e5}.conflict-option{padding:12px;margin:8px 0;border:1px solid #d8c49e;background:white}.conflict-option p{white-space:pre-wrap;overflow-wrap:anywhere}.sync-note{font-size:14px;color:#586f5d}
 .bib{margin-top:10px}.bib textarea{min-height:110px;font:13px/1.45 ui-monospace,Menlo,monospace}.bib-out{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:6px}.bib-cite{background:#e3ede4;padding:6px 9px;border-radius:6px;font-size:14px;overflow-wrap:anywhere}.bib-copy{padding:6px 11px;font-size:14px}.bib-note{font-size:13px;color:#805120}
+
+.shot{margin:0 0 12px}.shot img{display:block;width:100%;max-height:70vh;object-fit:contain;object-position:top left;border:1px solid #d5e0d7;border-radius:6px;background:#fff}.shot-bar{display:flex;align-items:center;gap:6px;font-size:13px;color:#526b5c;margin-top:4px}.shot-bar span{margin-right:auto}.shot-btn{padding:2px 9px;font-size:13px;line-height:1.4}
+
+.shot img,#preview img{cursor:zoom-in}.lightbox{position:fixed;inset:0;z-index:9999;background:rgba(12,24,18,.9);display:flex;align-items:center;justify-content:center;overflow:auto;cursor:zoom-out}.lightbox.actual{display:block;padding:20px}.lightbox img{display:block;max-width:94vw;max-height:88vh;object-fit:contain;background:#fff;border-radius:4px;box-shadow:0 8px 40px #0009;cursor:zoom-in}.lightbox img.actual{max-width:none;max-height:none;margin:0 auto;cursor:zoom-out}.lightbox button{position:fixed;width:42px;height:42px;padding:0;border:0;border-radius:50%;background:#ffffffee;color:#193d32;font-size:24px;line-height:1;cursor:pointer;box-shadow:0 2px 10px #0006}.lightbox button[hidden]{display:none}.lightbox-close{top:12px;right:12px}.lightbox-prev{left:12px;top:calc(50% - 21px)}.lightbox-next{right:12px;top:calc(50% - 21px)}.lightbox-cap{position:fixed;left:0;right:0;bottom:10px;text-align:center;color:#fff;font-size:13px;pointer-events:none}
 </style></head><body class="viewer">
 <div class="bar"><button id="folder" class="primary">Open library folder</button><button id="reconnect" hidden>Reconnect folder</button><button id="save" class="primary">Sync now</button><button id="reload">Reload from disk</button><button id="section">Add section</button></div>
 <h1 id="title">Your evidence library</h1><p>Local files. Screenshots appear beneath their sentences.</p>
@@ -26,9 +30,14 @@ globalThis.Library=(()=>{
    if(typeof row.keyword!=='string'||typeof row.sentence!=='string'||typeof row.link!=='string')throw Error('Invalid row.');
    if(row.link&&!/^https?:\/\//i.test(row.link))throw Error('Links must start with http:// or https://.');
    if(row.screenshot&&!/^images\/[a-zA-Z0-9_-]+\.(png|jpg|webp)$/.test(row.screenshot))throw Error('Invalid screenshot path.');
+   if(row.screenshots!==undefined&&(!Array.isArray(row.screenshots)||row.screenshots.length>200||row.screenshots.some(p=>typeof p!=='string'||!/^images\/[a-zA-Z0-9_-]+\.(png|jpg|webp)$/.test(p))))throw Error('Invalid screenshot list.');
   }
   return data;
  }
+ // Several screenshots per entry: row.screenshots holds them all in order; row.screenshot mirrors the first
+ // so Paper City and older copies of the viewer keep working.
+ function shots(row){const list=Array.isArray(row?.screenshots)?row.screenshots.filter(Boolean):[];if(row?.screenshot&&!list.includes(row.screenshot))list.unshift(row.screenshot);return list;}
+ function setShots(row,list){list=[...new Set(list.filter(Boolean))];row.screenshot=list[0]||'';if(list.length>1)row.screenshots=list;else delete row.screenshots;}
  async function read(dir){try{const file=await (await dir.getFileHandle('session.json')).getFile();return validate(JSON.parse(await file.text()));}catch(e){if(e.name==='NotFoundError')return null;throw e;}}
  async function write(dir,name,content){const handle=await dir.getFileHandle(name,{create:true});const stream=await handle.createWritable();try{await stream.write(content);await stream.close();}catch(e){await stream.abort().catch(()=>{});throw e;}}
  async function save(dir,data,pending,viewerHTML){
@@ -73,7 +82,20 @@ globalThis.Library=(()=>{
   }
   validate(data);return {data,pending};
  }
- return {uuid,empty,validate,read,write,save,image,picture,migrate};
+ // Click a screenshot → full-screen view. ←/→ browse the entry's screenshots, click the image for actual size, Esc or click outside to close.
+ function enlarge(srcs,start=0,alt='Screenshot'){
+  if(!srcs.length)return;let i=Math.max(0,start);
+  const box=document.createElement('div');box.className='lightbox';box.tabIndex=-1;box.setAttribute('role','dialog');box.setAttribute('aria-label','Enlarged screenshot');
+  const img=document.createElement('img'),cap=document.createElement('div');cap.className='lightbox-cap';
+  const make=(text,title,cls,fn)=>{const b=document.createElement('button');b.type='button';b.textContent=text;b.title=title;b.setAttribute('aria-label',title);b.className=cls;b.onclick=e=>{e.stopPropagation();fn();};return b;};
+  const prev=make('‹','Previous screenshot (←)','lightbox-prev',()=>show(i-1)),next=make('›','Next screenshot (→)','lightbox-next',()=>show(i+1)),close=make('✕','Close (Esc)','lightbox-close',()=>done());
+  function show(n){i=(n+srcs.length)%srcs.length;img.classList.remove('actual');box.classList.remove('actual');img.src=srcs[i];img.alt=alt+' ('+(i+1)+' of '+srcs.length+')';cap.textContent=(srcs.length>1?(i+1)+' of '+srcs.length+' · ← → to browse · ':'')+'click image for actual size · Esc to close';prev.hidden=next.hidden=srcs.length<2;}
+  function key(e){if(e.key==='Escape'){e.preventDefault();done();}else if(e.key==='ArrowLeft'){e.preventDefault();show(i-1);}else if(e.key==='ArrowRight'){e.preventDefault();show(i+1);}}
+  function done(){document.removeEventListener('keydown',key,true);box.remove();}
+  img.onclick=e=>{e.stopPropagation();box.classList.toggle('actual',img.classList.toggle('actual'));};
+  box.onclick=done;box.append(img,prev,next,close,cap);document.body.append(box);document.addEventListener('keydown',key,true);show(i);box.focus();
+ }
+ return {uuid,empty,validate,read,write,save,image,picture,migrate,shots,setShots,enlarge};
 })();
 
 'use strict';
@@ -205,10 +227,10 @@ globalThis.renderSyncConflicts=function(container,conflicts,data,onChoose,dir){
   for(const version of conflict.versions){
    const box=document.createElement('div');box.className='conflict-option';const text=document.createElement('p');
    const v=version.value;
-   text.textContent=v===null?'Entry removed':Array.isArray(v)?'Order: '+v.map(id=>data.rows.find(r=>r.id===id)?.keyword||data.rows.find(r=>r.id===id)?.title||id).join(' → '):typeof v==='object'?[v.keyword||v.title,v.year?'Year: '+v.year:'',v.sentence,v.notes?'Notes: '+v.notes:'',v.link,v.screenshot?'Screenshot: '+v.screenshot:'No screenshot'].filter(Boolean).join('\n'):String(v);
+   text.textContent=v===null?'Entry removed':Array.isArray(v)?'Order: '+v.map(id=>data.rows.find(r=>r.id===id)?.keyword||data.rows.find(r=>r.id===id)?.title||id).join(' → '):typeof v==='object'?[v.keyword||v.title,v.year?'Year: '+v.year:'',v.sentence,v.notes?'Notes: '+v.notes:'',v.link,(c=>c?c+(c>1?' screenshots':' screenshot'):'No screenshot')(Library.shots(v).length)].filter(Boolean).join('\n'):String(v);
    const button=document.createElement('button');button.textContent='Keep '+version.actor+' version';button.onclick=()=>onChoose(conflict.key,version.value);
    box.append(text,button);
-   if(v?.screenshot&&dir){const show=document.createElement('button');show.textContent='Compare screenshot';show.onclick=async()=>{show.disabled=true;try{const blob=await Library.image(dir,v.screenshot);if(!box.isConnected)return;const url=URL.createObjectURL(blob);container._imageURLs.push(url);const image=document.createElement('img');image.src=url;image.alt='Screenshot from '+version.actor;image.style.maxWidth='100%';image.style.maxHeight='60vh';image.style.display='block';box.append(image);}catch(error){text.textContent+='\n'+error.message;show.disabled=false;}};box.append(show);}
+   if(v?.screenshot&&dir){const show=document.createElement('button');show.textContent=Library.shots(v).length>1?'Compare screenshots':'Compare screenshot';show.onclick=async()=>{show.disabled=true;try{for(const path of Library.shots(v)){const blob=await Library.image(dir,path);if(!box.isConnected)return;const url=URL.createObjectURL(blob);container._imageURLs.push(url);const image=document.createElement('img');image.src=url;image.alt='Screenshot from '+version.actor;image.style.maxWidth='100%';image.style.maxHeight='60vh';image.style.display='block';image.style.cursor='zoom-in';image.title='Click to enlarge';image.onclick=()=>Library.enlarge([image.src],0,image.alt);box.append(image);}}catch(error){text.textContent+='\n'+error.message;show.disabled=false;}};box.append(show);}
    section.append(box);
   }
   container.append(section);
@@ -338,18 +360,36 @@ function render(){
    for(const [label,type] of [['Refresh sentence','refresh'],['Find instances','find']]){const b=document.createElement('button');b.textContent=label;b.disabled=!sync;b.onclick=control(()=>sendRequest(type,row.id));actions.append(b);}actions.hidden=web;cells[1].append(actions);
    const notesLabel=document.createElement('label');notesLabel.textContent='Notes';const notes=document.createElement('textarea');notes.value=row.notes||'';notes.placeholder='Add your notes…';notes.setAttribute('aria-label','Notes for '+row.keyword);notes.disabled=!dir;notes.oninput=()=>{row.notes=notes.value;edited();};notesLabel.append(notes);cells[1].append(notesLabel);cells[1].append(Bib.field(row,{disabled:!dir,onEdit:()=>edited(),tell}));
    if(dir){
-    const upload=document.createElement('input');upload.type='file';upload.accept='image/png,image/jpeg,image/webp';upload.setAttribute('aria-label','Screenshot for '+row.keyword);upload.onchange=control(async()=>{if(upload.files[0])await attachImage(row,upload.files[0]);});cells[3].append(upload);
-    const paste=document.createElement('button');paste.textContent='Paste screenshot';paste.onclick=control(async()=>{for(const item of await navigator.clipboard.read()){const type=item.types.find(t=>['image/png','image/jpeg','image/webp'].includes(t));if(type){await attachImage(row,await item.getType(type));return;}}throw Error('No image in the clipboard.');});
-    paste.addEventListener('paste',event=>{event.preventDefault();const file=Array.from(event.clipboardData.items).find(i=>i.kind==='file'&&i.type.startsWith('image/'))?.getAsFile();if(file)control(()=>attachImage(row,file))();else tell('No image in the clipboard.');});cells[3].append(paste);
-    if(row.screenshot){const removeImage=document.createElement('button');removeImage.textContent='Remove screenshot';removeImage.onclick=()=>{pending.delete(row.screenshot);row.screenshot='';edited();render();};cells[3].append(removeImage);}
+    const upload=document.createElement('input');upload.type='file';upload.multiple=true;upload.accept='image/png,image/jpeg,image/webp';upload.title='Add one or more screenshots';upload.setAttribute('aria-label','Add screenshots for '+row.keyword);upload.onchange=control(async()=>{for(const file of upload.files)await attachImage(row,file);});cells[3].append(upload);
+    const paste=document.createElement('button');paste.textContent=Library.shots(row).length?'Paste another screenshot':'Paste screenshot';paste.onclick=control(async()=>{for(const item of await navigator.clipboard.read()){const type=item.types.find(t=>['image/png','image/jpeg','image/webp'].includes(t));if(type){await attachImage(row,await item.getType(type));return;}}throw Error('No image in the clipboard.');});
+    paste.addEventListener('paste',event=>{event.preventDefault();const files=Array.from(event.clipboardData.items).filter(i=>i.kind==='file'&&i.type.startsWith('image/')).map(i=>i.getAsFile()).filter(Boolean);if(files.length)control(async()=>{for(const file of files)await attachImage(row,file);})();else tell('No image in the clipboard.');});cells[3].append(paste);
+    if(Library.shots(row).length){const removeImage=document.createElement('button');removeImage.textContent=Library.shots(row).length>1?'Remove all screenshots':'Remove screenshot';removeImage.onclick=()=>{const list=Library.shots(row);if(list.length>1&&!confirm('Remove all '+list.length+' screenshots from '+row.keyword+'?'))return;for(const p of list)pending.delete(p);Library.setShots(row,[]);edited();render();};cells[3].append(removeImage);}
    }
-   if(row.screenshot){
-    const button=document.createElement('button');button.textContent='Show screenshot';const preview=document.createElement('div');preview.className='image-cell';sentence.after(preview);cells[3].append(button);let opened=false,token=0,url=null;
-    button.onclick=async()=>{token++;const request=token;if(opened){preview.replaceChildren();if(url){URL.revokeObjectURL(url);urls.delete(url);}url=null;opened=false;button.textContent='Show screenshot';return;}
-     button.disabled=true;try{const img=document.createElement('img');img.loading='lazy';img.decoding='async';img.alt='Screenshot for '+row.keyword;
-      if(dir){const blob=await Library.image(dir,row.screenshot,pending);if(!tr.isConnected||request!==token)return;url=URL.createObjectURL(blob);urls.add(url);img.src=url;}
-      else img.src=row.screenshot;
-      img.onerror=()=>{tell('Screenshot could not be loaded. Open viewer.html from the library folder, or use Open library folder.');};preview.append(img);opened=true;button.textContent='Hide screenshot';
+   const shotPaths=Library.shots(row);
+   if(shotPaths.length){
+    // Every screenshot for this entry, in order, under its sentence. Reorder or remove each one.
+    const button=document.createElement('button'),preview=document.createElement('div');preview.className='image-cell';sentence.after(preview);cells[3].append(button);
+    let opened=false,token=0,mine=[];
+    const label=()=>(opened?'Hide ':'Show ')+(shotPaths.length>1?shotPaths.length+' screenshots':'screenshot');button.textContent=label();
+    const setList=list=>{for(const p of shotPaths)if(!list.includes(p))pending.delete(p);Library.setShots(row,list);edited();render();};
+    button.onclick=async()=>{token++;const request=token;
+     if(opened){preview.replaceChildren();for(const u of mine){URL.revokeObjectURL(u);urls.delete(u);}mine=[];opened=false;button.textContent=label();return;}
+     button.disabled=true;try{
+      const figures=[];
+      for(const [i,path] of shotPaths.entries()){
+       const figure=document.createElement('figure');figure.className='shot';
+       const img=document.createElement('img');img.loading='lazy';img.decoding='async';img.alt='Screenshot '+(i+1)+' for '+row.keyword;
+       img.onerror=()=>{tell('Screenshot could not be loaded. Open viewer.html from the library folder, or use Open library folder.');};
+       if(dir){try{const blob=await Library.image(dir,path,pending);if(!tr.isConnected||request!==token)return;const url=URL.createObjectURL(blob);urls.add(url);mine.push(url);img.src=url;figure.append(img);}catch(e){const p=document.createElement('p');p.textContent='Screenshot '+(i+1)+': '+e.message;figure.append(p);}}
+       else{img.src=path;figure.append(img);}
+       const bar=document.createElement('figcaption');bar.className='shot-bar';const count=document.createElement('span');count.textContent=(i+1)+' of '+shotPaths.length;bar.append(count);
+       if(dir)for(const [text,title,act] of [['↑','Move earlier',()=>{const l=[...shotPaths];[l[i-1],l[i]]=[l[i],l[i-1]];setList(l);}],['↓','Move later',()=>{const l=[...shotPaths];[l[i+1],l[i]]=[l[i],l[i+1]];setList(l);}],['✕','Remove this screenshot',()=>setList(shotPaths.filter((_,j)=>j!==i))]]){
+        if((text==='↑'&&i===0)||(text==='↓'&&i===shotPaths.length-1))continue;
+        const b=document.createElement('button');b.type='button';b.className='shot-btn';b.textContent=text;b.title=title;b.setAttribute('aria-label',title+' ('+(i+1)+')');b.onclick=act;bar.append(b);}
+       figure.append(bar);figures.push(figure);
+      }
+      preview.replaceChildren(...figures);opened=true;button.textContent=label();
+      for(const im of preview.querySelectorAll('.shot img')){im.title='Click to enlarge';im.onclick=()=>{const srcs=[...preview.querySelectorAll('.shot img')].map(x=>x.src);Library.enlarge(srcs,srcs.indexOf(im.src),'Screenshot for '+row.keyword);};}
      }catch(e){tell(e.message);}finally{button.disabled=false;}
     };
     queueMicrotask(()=>{if(tr.isConnected)button.onclick();});
@@ -368,8 +408,9 @@ $('search').oninput=()=>{page=0;render();};$('prev').onclick=()=>{page--;render(
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});render();
 
 async function attachImage(row,file){
- const blob=await Library.picture(file);if(row.screenshot)pending.delete(row.screenshot);
- row.screenshot='images/'+Library.uuid()+'.png';pending.set(row.screenshot,blob);edited();
+ // Adds another screenshot to the entry (earlier ones are kept).
+ const blob=await Library.picture(file),path='images/'+Library.uuid()+'.png';pending.set(path,blob);
+ Library.setShots(row,[...Library.shots(row),path]);edited();
 }
 function lockConflicts(){
  const blocked=!!sync?.conflicts.length;
@@ -386,7 +427,7 @@ async function flush(){
  if(!sync)return;if(sync.conflicts.length)throw Error('Resolve the conflicting versions first.');
  const generation=editGeneration,sent=structuredClone(data),images=new Map(pending);
  const result=await sync.save(sent,images);
- for(const [path] of pending)if(sent.rows.some(r=>r.screenshot===path))pending.delete(path);
+ for(const [path] of pending)if(sent.rows.some(r=>Library.shots(r).includes(path)))pending.delete(path);
  if(generation!==editGeneration){Object.assign(sync,result.localContext);dirty=true;return;}
  applyResult(result);if(!result.conflicts.length&&!result.snapshotError)tell('Synchronized with the capture extension.');
 }

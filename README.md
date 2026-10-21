@@ -98,3 +98,11 @@ The panel's **Heading for this entry** box now changes only the current entry: t
 
 ## Paper City is built in (2.4.0)
 Paper City is part of this extension now; you only load Overleaf Synced Library. Open it with **Open Paper City** in the panel, or right-click the extension icon → **Open Paper City**. It connects to your library folder automatically (the one the panel uses). If you had Paper City loaded as its own extension, remove it in chrome://extensions. It shares library.js, sync.js and bibtex.js with the extension instead of keeping copies.
+
+## 2.5.0 — Several screenshots per paper, click to enlarge
+Each entry can now hold as many screenshots as you like. In the side panel, every paste (⌘V on **Paste screenshot**) or file you choose adds another one (you can pick several files at once). The screenshots show in order: **↑ ↓** reorder them, **✕** removes one, **Remove all** clears them. The viewer works the same way under each sentence.
+Click any screenshot (panel, viewer or a conflict comparison) to see it full screen: **← →** step through that paper's screenshots, click the image for actual size, **Esc** or click outside to close.
+Older entries with one screenshot keep working. Paper City still shows the first screenshot. Reload the extension, reconnect the folder, and refresh viewer.html.
+
+## 2.5.1 — Opens on your newest entry
+When you connect, reconnect or reload a library, **Current entry** is now the entry you added most recently (it used to be the first one in the list). If an entry is added from the viewer or another window, the panel switches to it, unless you're typing in the panel at that moment. New entries record when they were added. For entries saved before this update, the one lowest in the list counts as the newest.

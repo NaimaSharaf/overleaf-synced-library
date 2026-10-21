@@ -3,22 +3,36 @@ let mode='overleaf',dir=null,data=null,pending=new Map(),current=null,dirty=fals
 const isWeb=()=>mode==='websurfing';
 const tell=text=>$('status').textContent=text;
 function setDirty(){editGeneration++;dirty=true;tell('Syncing shortly…');clearTimeout(syncTimer);syncTimer=setTimeout(tick,900);}
+// The entry added most recently: highest "added" time; entries saved before this existed count as older, newest = lowest in the list.
+function newestRow(){let best=null;for(const r of data?.rows||[]){if(r.kind==='section')continue;if(!best||(r.added||0)>=(best.added||0))best=r;}return best;}
 function currentRow(){return data?.rows.find(r=>r.id===current&&r.kind!=='section');}
-function closeImage(){previewGeneration++;$('show').textContent='Show screenshot';if(previewURL)URL.revokeObjectURL(previewURL);previewURL=null;$('preview').replaceChildren();$('preview').hidden=true;}
-
+// Every screenshot of the current entry is shown in order. Click one to enlarge; ↑ ↓ reorder, ✕ removes just that one.
+let previewURLs=[];
+function shotLabel(row){const n=Library.shots(row).length;return n>1?' ('+n+')':'';}
+function closeImage(){previewGeneration++;$('show').textContent='Show screenshots'+shotLabel(currentRow());for(const u of previewURLs)URL.revokeObjectURL(u);previewURLs=[];previewURL=null;$('preview').replaceChildren();$('preview').hidden=true;}
 async function openImage(){
- const row=currentRow();if(!row?.screenshot)return;
- const generation=++previewGeneration,folder=dir,path=row.screenshot;
+ const row=currentRow(),paths=Library.shots(row);if(!paths.length)return;
+ const generation=++previewGeneration,folder=dir,key=paths.join('|');
  try{
-  const blob=await Library.image(folder,path,pending);
-  if(generation!==previewGeneration||currentRow()?.id!==row.id||currentRow()?.screenshot!==path||dir!==folder)return;
-  if(previewURL)URL.revokeObjectURL(previewURL);
-  previewURL=URL.createObjectURL(blob);
-  const img=document.createElement('img');img.src=previewURL;img.alt='Screenshot for '+row.keyword;
-  img.onerror=()=>{if(generation===previewGeneration){closeImage();tell('Screenshot could not be displayed. Try replacing the image.');}};
-  $('preview').replaceChildren(img);$('preview').hidden=false;$('show').textContent='Hide screenshot';
- }catch(error){if(generation===previewGeneration)tell('Screenshot could not be loaded: '+error.message);}
+  const blobs=await Promise.all(paths.map(path=>Library.image(folder,path,pending).catch(error=>error)));
+  if(generation!==previewGeneration||currentRow()?.id!==row.id||Library.shots(currentRow()).join('|')!==key||dir!==folder)return;
+  for(const u of previewURLs)URL.revokeObjectURL(u);previewURLs=[];
+  const urls=[],figures=paths.map((path,i)=>{
+   const figure=document.createElement('figure');figure.className='shot';const blob=blobs[i];
+   if(blob instanceof Error){const note=document.createElement('p');note.className='small';note.textContent='Screenshot '+(i+1)+' could not be loaded: '+blob.message;figure.append(note);}
+   else{const url=URL.createObjectURL(blob);previewURLs.push(url);urls.push(url);const img=document.createElement('img');img.src=url;img.alt='Screenshot '+(i+1)+' for '+row.keyword;img.title='Click to enlarge';
+    img.onclick=()=>Library.enlarge(urls,urls.indexOf(url),'Screenshot for '+row.keyword);
+    img.onerror=()=>{if(generation===previewGeneration)tell('Screenshot '+(i+1)+' could not be displayed. Try removing and re-adding it.');};figure.append(img);}
+   const bar=document.createElement('figcaption');bar.className='shot-bar';const count=document.createElement('span');count.textContent=(i+1)+' of '+paths.length;bar.append(count);
+   for(const [text,title,act] of [['↑','Move earlier',()=>moveShot(i,-1)],['↓','Move later',()=>moveShot(i,1)],['✕','Remove this screenshot',()=>removeShot(i)]]){
+    if((text==='↑'&&i===0)||(text==='↓'&&i===paths.length-1))continue;
+    const b=document.createElement('button');b.type='button';b.className='shot-btn';b.textContent=text;b.title=title;b.setAttribute('aria-label',title+' ('+(i+1)+')');b.onclick=act;bar.append(b);}
+   figure.append(bar);return figure;});
+  $('preview').replaceChildren(...figures);$('preview').hidden=false;$('show').textContent='Hide screenshots'+shotLabel(row);
+ }catch(error){if(generation===previewGeneration)tell('Screenshots could not be loaded: '+error.message);}
 }
+function moveShot(i,step){const row=currentRow();if(!row)return;const list=Library.shots(row),j=i+step;if(j<0||j>=list.length)return;[list[i],list[j]]=[list[j],list[i]];Library.setShots(row,list);draw();setDirty();}
+function removeShot(i){const row=currentRow();if(!row)return;const list=Library.shots(row),[gone]=list.splice(i,1);pending.delete(gone);Library.setShots(row,list);draw();setDirty();tell('Screenshot removed.');}
 function commit(){const row=currentRow();if(row){if(isWeb()){row.keyword=$('web-title').value.trim()||'Untitled entry';row.year=$('year').value.trim();}else row.sentence=$('sentence').value;row.link=$('link').value.trim();if($('notes').dataset.id===row.id&&$('notes').value!==(row.notes||''))row.notes=$('notes').value;}}
 function draw(){
  $('mode').value=mode;
@@ -33,10 +47,11 @@ function draw(){
   if(!group){group=document.createElement('optgroup');group.label='Unsectioned';$('entry').append(group);}
   const option=document.createElement('option');option.value=row.id;option.textContent=row.keyword;group.append(option);
  }
- if(!currentRow())current=data?.rows.find(r=>r.kind!=='section')?.id||null;
+ if(!currentRow())current=newestRow()?.id||null;
  $('entry').value=current||'';const row=currentRow();$('editor').hidden=!row;
  if(row){$('year').value=row.year||'';$('web-title').value=row.keyword;$('keyword').textContent=row.keyword;$('sentence').value=row.sentence;$('link').value=row.link;if(document.activeElement!==$('notes')||$('notes').dataset.id!==row.id)$('notes').value=row.notes||'';$('notes').dataset.id=row.id;$('show').disabled=$('remove').disabled=!row.screenshot;}
- if(row?.screenshot)void openImage();
+ $('paste').textContent=Library.shots(row).length?'Paste another screenshot':'Paste screenshot';
+ if(Library.shots(row).length)void openImage();
  drawHeading();
  drawBib(row);
  $('location').textContent=dir?dir.name+' · '+(data?.name||'New library')+' · '+(data?.rows.length||0)+' rows':'Choose a library folder.';
@@ -82,7 +97,7 @@ $('reconnect').onclick=run(async()=>{if(!discard())return;if(await remembered.re
 $('reload').onclick=run(async()=>{if(!dir)throw Error('Choose a folder first.');if(!discard())return;await connect(dir);});
 $('entry').onchange=()=>{commit();current=$('entry').value;draw();};
 $('year').oninput=$('web-title').oninput=$('sentence').oninput=$('link').oninput=$('notes').oninput=()=>{commit();if(isWeb()){const option=Array.from($('entry').options).find(o=>o.value===current);if(option)option.textContent=currentRow()?.keyword||'';}setDirty();};
-$('capture').onclick=run(async()=>{if(!dir)throw Error('Choose a library folder first.');commit();const found=await editor('captureSelection');let row=data.rows.find(r=>r.kind!=='section'&&r.keyword.toLowerCase()===found.keyword.toLowerCase());if(!row){row={id:Library.uuid(),keyword:found.keyword,sentence:found.sentence||'',link:'',screenshot:'',incomplete:!!found.incomplete};data.rows.push(row);dirty=true;}current=row.id;draw();tell(found.incomplete?'Captured keyword. Paste its sentence; source context was unavailable.':dirty?'Entry ready. Save to folder to write it.':'Existing entry selected.');},true);
+$('capture').onclick=run(async()=>{if(!dir)throw Error('Choose a library folder first.');commit();const found=await editor('captureSelection');let row=data.rows.find(r=>r.kind!=='section'&&r.keyword.toLowerCase()===found.keyword.toLowerCase());if(!row){row={id:Library.uuid(),keyword:found.keyword,sentence:found.sentence||'',link:'',screenshot:'',incomplete:!!found.incomplete,added:Date.now()};data.rows.push(row);dirty=true;}current=row.id;draw();tell(found.incomplete?'Captured keyword. Paste its sentence; source context was unavailable.':dirty?'Entry ready. Save to folder to write it.':'Existing entry selected.');},true);
 $('refresh').onclick=run(async()=>{commit();const row=currentRow();if(!row)return;const result=await editor('findInstances',[row.keyword]),match=result.matches[0];if(!match?.count)throw Error('Keyword not found; sentence kept.');row.sentence=match.sentence;row.incomplete=false;draw();setDirty();});
 const findCurrentInstances=run(async()=>{const row=currentRow();if(!row)return;tell('Finding instances of '+row.keyword+'…');const result=await editor('findInstances',row.keyword);$('results').replaceChildren();for(const match of result.matches){const section=document.createElement('section'),title=document.createElement('strong'),text=document.createElement('p');title.textContent='Line '+match.line;text.textContent=match.sentence+'\n'+match.before+match.match+match.after;section.append(title,text);$('results').append(section);}tell(result.matches.length+' matches in the open source file.');},true);
 $('find').onclick=findCurrentInstances;
@@ -111,12 +126,13 @@ $('keyword-find').onclick=run(async()=>{
  tell((copied?'Copied “'+found.keyword+'”. ':'Could not copy to clipboard. ')+(matches.length?matches.length+' matching '+(matches.length===1?'entry':'entries')+' found in this session.':'No matching entry in this session.'));
 },true);
 
-async function attach(blob){const row=currentRow();if(!row)throw Error('Capture or select an entry first.');const image=await Library.picture(blob);if(row.screenshot&&pending.has(row.screenshot))pending.delete(row.screenshot);row.screenshot='images/'+Library.uuid()+'.png';pending.set(row.screenshot,image);draw();setDirty();}
-$('image').onchange=run(async()=>{const file=$('image').files[0];if(file)await attach(file);$('image').value='';});
+// Each new screenshot is added to the entry; earlier ones are kept.
+async function attach(blob){const row=currentRow();if(!row)throw Error('Capture or select an entry first.');const image=await Library.picture(blob),path='images/'+Library.uuid()+'.png';pending.set(path,image);Library.setShots(row,[...Library.shots(row),path]);draw();setDirty();tell('Screenshot added ('+Library.shots(row).length+' for this entry).');}
+$('image').onchange=run(async()=>{for(const file of $('image').files)await attach(file);$('image').value='';});
 $('paste').onclick=run(async()=>{if(!currentRow())throw Error('Select an entry first.');if(!await chrome.permissions.request({permissions:['clipboardRead']}))throw Error('Use ⌘V / Ctrl+V on the Paste screenshot button instead.');for(const item of await navigator.clipboard.read()){const type=item.types.find(t=>['image/png','image/jpeg','image/webp'].includes(t));if(type){await attach(await item.getType(type));return;}}throw Error('No screenshot found in the clipboard.');});
-$('paste').addEventListener('paste',event=>{event.preventDefault();const file=Array.from(event.clipboardData.items).find(i=>i.kind==='file'&&i.type.startsWith('image/'))?.getAsFile();if(file)run(()=>attach(file))();else tell('No image in clipboard.');});
-$('show').onclick=run(async()=>{if(previewURL){closeImage();return;}await openImage();});
-$('remove').onclick=()=>{const row=currentRow();if(row){pending.delete(row.screenshot);row.screenshot='';draw();setDirty();}};
+$('paste').addEventListener('paste',event=>{event.preventDefault();const files=Array.from(event.clipboardData.items).filter(i=>i.kind==='file'&&i.type.startsWith('image/')).map(i=>i.getAsFile()).filter(Boolean);if(files.length)run(async()=>{for(const file of files)await attach(file);})();else tell('No image in clipboard.');});
+$('show').onclick=run(async()=>{if(!$('preview').hidden){closeImage();return;}await openImage();});
+$('remove').onclick=()=>{const row=currentRow();if(!row)return;const list=Library.shots(row);if(list.length>1&&!confirm('Remove all '+list.length+' screenshots from '+row.keyword+'?'))return;for(const path of list)pending.delete(path);Library.setShots(row,[]);draw();setDirty();};
 $('save').onclick=run(async()=>{if(!sync)throw Error('Choose a library folder first.');commit();await flush();tell('Folder is up to date.');});
 async function importOld(old){if(!dir||!data)throw Error('Choose an empty library folder first.');if(data.rows.length)throw Error('Use an empty library folder to import; existing entries are protected.');const migrated=await Library.migrate(old);if(data.project!==migrated.data.project)throw Error('Open the matching Overleaf project and choose a new folder for this session.');migrated.data.name=data.name;migrated.data.revision=data.revision;data=migrated.data;pending=migrated.pending;current=null;dirty=true;draw();tell('Imported '+data.rows.length+' rows, including '+pending.size+' screenshots. Click Save to folder.');}
 $('import').onchange=run(async()=>{const file=$('import').files[0];if(!file)return;if(file.size>100*1024*1024)throw Error('Import limit is 100 MB.');await importOld(JSON.parse(await file.text()));$('import').value='';});
@@ -134,6 +150,8 @@ function showConflicts(result){
  renderSyncConflicts($('conflicts'),result.conflicts,data,(key,value)=>run(async()=>{applyResult(await sync.resolve(key,value));tell(sync.conflicts.length?'Resolve the remaining versions.':'Conflict resolved and synchronized.');})(),dir);lockConflicts();
 }
 function applyResult(result){
+ const before=new Set((data?.rows||[]).map(r=>r.id)),fresh=result.data.rows.filter(r=>r.kind!=='section'&&!before.has(r.id));
+ if(data&&fresh.length&&!$('editor').contains(document.activeElement)){const newest=fresh.reduce((a,b)=>(b.added||0)>=(a.added||0)?b:a);current=newest.id;}
  const changed=JSON.stringify(data?.rows)!==JSON.stringify(result.data.rows);data=result.data;dirty=false;
  if(changed)draw();showConflicts(result);
  if(result.conflicts.length)tell('Conflicting edits found. Choose the version to keep below.');
@@ -145,7 +163,7 @@ async function flush(){
  commit();Library.validate(data);
  const generation=editGeneration,sent=structuredClone(data),images=new Map(pending);
  const result=await sync.save(sent,images);
- for(const [path,blob] of pending)if(sent.rows.some(r=>r.screenshot===path))pending.delete(path);
+ for(const [path,blob] of pending)if(sent.rows.some(r=>Library.shots(r).includes(path)))pending.delete(path);
  if(generation!==editGeneration){Object.assign(sync,result.localContext);dirty=true;return;}
  applyResult(result);
  if(!result.conflicts.length&&!result.snapshotError)tell('Synchronized with the local folder.');
@@ -177,7 +195,7 @@ async function handleViewerRequest(){
    let result;
    if(request.type==='capture'){
     const found=await editor('captureSelection');let row=data.rows.find(r=>r.kind!=='section'&&r.keyword.toLowerCase()===found.keyword.toLowerCase());
-    if(!row){row={id:request.id,keyword:found.keyword,sentence:found.sentence||'',link:'',screenshot:'',incomplete:!!found.incomplete};data.rows.push(row);dirty=true;}
+    if(!row){row={id:request.id,keyword:found.keyword,sentence:found.sentence||'',link:'',screenshot:'',incomplete:!!found.incomplete,added:Date.now()};data.rows.push(row);dirty=true;}
     current=row.id;draw();await flush();result={ok:true,message:'Captured '+found.keyword};
    }else if(request.type==='refresh'||request.type==='find'){
     const row=data.rows.find(r=>r.id===request.rowId&&r.kind!=='section');if(!row)throw Error('Entry no longer exists.');
@@ -256,7 +274,7 @@ $('add-web').onclick=run(async()=>{
  }});}catch{throw Error('This page cannot be read. Try a regular webpage with selectable text.');}
  const keyword=results?.[0]?.result?.trim();
  if(!keyword)throw Error('Highlight a word on the webpage, then click Capture highlighted word.');
- commit();const row={id:Library.uuid(),keyword,year:'',sentence:'',link:'',screenshot:''};
+ commit();const row={id:Library.uuid(),keyword,year:'',sentence:'',link:'',screenshot:'',added:Date.now()};
  data.rows.push(row);current=row.id;setDirty();draw();$('year').focus();
 });
 
